@@ -1,0 +1,1663 @@
+step_glm <- function(fit.model, criterion, direction, test, level){
+       oldw <- getOption("warn")
+	   options(warn = -1)
+	   if(class(fit.model)[1] != "glm" & class(fit.model)[1] != "lm" & class(fit.model)[1] != "negbin" & class(fit.model)[1] != "gee") 
+	   stop("Only lm-, glm-, negbin- and gee-type objects are supported!!",call.=FALSE)
+ 	   if(missingArg(criterion)) criterion <- ifelse(class(fit.model)[1] == "gee","qic","bic")
+ 	   if(missingArg(direction)) direction <- "backward"
+ 	   if(missingArg(test)) test <- "Wald" else test="likelihood-ratio"
+	   if(direction!="forward" & direction!="backward")
+	   stop("Only backward and forward directions are supported!!",call.=FALSE)
+	   criterion <- tolower(criterion)
+	   if(class(fit.model)[1] == "lm" &
+	     criterion!="aic" & criterion!="bic" & criterion!="press" & criterion!="p.value" & criterion!="adjr2" & criterion!="cp") 
+	   stop("Only AIC, BIC, adjusted R-square, PRESS, CP and p-value criteria are supported for lm-type objects!!",call.=FALSE)
+	   if(class(fit.model)[1] == "glm" &
+	     criterion!="aic" & criterion!="bic" & criterion!="adjr2d" & criterion!="adjr2p" & criterion!="p.value") 
+	   stop("Only AIC, BIC, adjusted R-square based on residual deviance, adjusted R-square based on Pearson statistic,
+	         and p-value criteria are supported for glm-type objects!!",call.=FALSE)
+	   if(class(fit.model)[1] == "negbin" & criterion!="aic" & criterion!="bic" & criterion!="p.value") 
+	   stop("Only AIC, BIC and p-value criteria are supported for negbin-type objects!!",call.=FALSE)
+	   if(class(fit.model)[1] == "gee" & criterion!="qic" & criterion!="p.value") 
+	   stop("Only QIC and p-value criteria are supported for gee-type objects!!",call.=FALSE)
+	   if(missingArg(level)) level <- 0.05 else level <- min(max(0.01,abs(level)),0.5)
+	   if(class(fit.model)[1] != "gee") datas <- na.omit(get_all_vars(fit.model,eval(fit.model$call$data)))
+	   out <- function(fitt,names.effets){
+			   left <- lapply(as.list(strsplit(attr(fitt$terms,"term.labels"),":",fixed=TRUE)),function(x) paste(sort(x),collapse=":"))
+			   right <- lapply(as.list(strsplit(names.effets,":",fixed=TRUE)),function(x) paste(sort(x),collapse=":"))
+			   !(left %in% right)
+	   }
+	   constr.formula <- function(fitt,inter,term,action){
+		   if(missingArg(term)) names.effects <- attr(fitt$terms,"term.labels")
+		   else{if(action=="-") names.effects <- attr(fitt$terms,"term.labels")[attr(fitt$terms,"term.labels")!=term]
+		       else names.effects <- c(attr(fitt$terms,"term.labels"),term)}   
+		   if(length(names.effects)>0)
+		   paste(attr(fitt$terms,"variables")[2],ifelse(inter,"~ 1 +","~ 0 +"),paste(names.effects,collapse=" + "))
+		   else paste(attr(fitt$terms,"variables")[2],ifelse(inter,"~ 1 ","~ 0 "))
+	   }
+	   lmstats <- function(fitt){
+	              if(is.null(fitt$weights)) weights <- matrix(1,length(fitt$residuals),1) else weights <- fitt$weights
+				  r2 <- 1 - (sum(weights*fitt$residuals^2)/fitt$df.residual)/denr2
+				  X <- model.matrix(fitt)
+			      if(length(X)!=0){
+				      sigma2 <- sum(weights*fitt$residuals^2)/fitt$df.residual
+		       	      Xw <- X*matrix(sqrt(weights),nrow(X),ncol(X))
+					  salida <- svd(Xw)
+	                  h <- apply(salida$u^2,1,sum)
+			          press <- sum((resid(fitt)*sqrt(weights)/(1-h))^2)/nrow(X)
+		   	      }else{sigma2 <- sum(resid(fitt)^2)/fitt$df.residual
+				  		press <- sigma2}
+				  c(AIC(fitt),BIC(fitt),r2,press,fitt$df.residual*(sigma2/sigma20-1) + ncol(X))
+	   }
+	   p.values <- function(fitt,i,num.effects){
+	             if(missingArg(num.effects)) num.effects <- attr(model.matrix(fitt),"assign")
+	           	 p.value <- t(coef(fitt)[num.effects==i])%*%solve(vcov(fitt)[num.effects==i,num.effects==i])%*%coef(fitt)[num.effects==i]
+				 p.value <- 1 - pf(p.value/sum(num.effects==i),sum(num.effects==i),fitt$df.residual)
+				 p.value
+	   }
+	   glmstats <- function(fitt){
+					 if(inter || fitt$family$family=="gaussian"){
+					   r21 <- 1 - (fitt$deviance/fitt$df.residual)/denr2
+	                   r22 <- 1 - (sum(resid(fitt,type="pearson")^2)/fitt$df.residual)/denr22}
+					 else{
+					   r21 <- fitt$deviance/fitt$df.residual
+	                   r22 <- sum(resid(fitt,type="pearson")^2)/fitt$df.residual}
+					 out <- c(AIC(fitt),BIC(fitt),r21,r22)
+	   			   out
+	   }		   
+	   p.values2 <- function(fitt,i,num.effects){
+				 if(class(fitt)[1] != "gee"){
+				   if(missingArg(num.effects)) num.effects <- attr(model.matrix(fitt),"assign")
+		           p.value <- t(coef(fitt)[num.effects==i])%*%solve(vcov(fitt)[num.effects==i,num.effects==i])%*%coef(fitt)[num.effects==i]
+				   if(fitt$family$family=="gaussian" & fitt$family$link=="identity")
+					 p.value <- 1 - pf(p.value/sum(num.effects==i),sum(num.effects==i),fitt$df.residual)
+				   else p.value <- 1 - pchisq(p.value,sum(num.effects==i))  
+				 }else{if(missingArg(num.effects)) num.effects <- attr(model.matrix(as.formula(fitt$call$formula),m),"assign")
+				       p.value <- t(coef(fitt)[num.effects==i])%*%solve(fitt$robust.variance[num.effects==i,num.effects==i])%*%coef(fitt)[num.effects==i]
+				       p.value <- 1 - pchisq(p.value,sum(num.effects==i))}
+				 p.value
+	   }
+	   quiet <- function(x){ 
+                sink(tempfile()) 
+                on.exit(sink()) 
+                invisible(force(suppressMessages(x)))
+	   }
+	   QIC <- function(fitt,m,d){
+		   etas <- fitt$linear.predictors
+		   fitx0 <- glm(as.formula(paste(attr(fitt$terms,"variables")[2]," ~ -1 + offset(etas)")), family=fitt$family, data=m)
+		   w <- sqrt(fitx0$weights)
+		   phi_hat0 <- sum(resid(fitx0,type="pearson")^2)/(length(fitt$y)-length(coef(fitt)))
+		   X <- model.matrix(as.formula(fitt$call$formula),m)
+		   Xw <- matrix(w,nrow(X),ncol(X))*X
+		   vcov.0 <- solve(t(Xw)%*%Xw)
+		   phi_hat <- fitt$scale
+	       if(d) phi_hat0 <- phi_hat
+		   if(tolower(fitt$model$varfun)=="gaussian") qll <- -(1/2)*(fitt$y - fitted(fitt))^2
+		   if(tolower(fitt$model$varfun)=="binomial") qll <- fitx0$prior.weights*(fitx0$y*log(fitted(fitt)) + (1-fitx0$y)*log(1-fitted(fitt)))
+		   if(tolower(fitt$model$varfun)=="poisson") qll <- fitt$y*log(fitted(fitt)) - fitted(fitt)
+		   if(tolower(fitt$model$varfun)=="gamma") qll <- -fitt$y/fitted(fitt) - log(fitted(fitt))
+		   if(tolower(fitt$model$varfun)=="inverse.gaussian") qll <- (fitted(fitt) - (1/2)*fitt$y)/(fitted(fitt))^2
+		   QIC <- as.matrix(-2*sum(qll)/phi_hat + 2*sum(diag(solve(vcov.0*phi_hat0)%*%fitt$robust.variance)))
+		   QIC
+		}
+	   tol <- TRUE
+	   count <- 0
+	   inter <- ifelse(length(coef(fit.model))>0,names(coef(fit.model))[1]=="(Intercept)",FALSE)
+	   oldformula <- constr.formula(fit.model,inter)
+	   if(direction=="forward") oldformula <- constr.formula(fit.model,inter,term=attr(fit.model$terms,"term.labels"),action="-")
+	   ps <- ifelse(criterion=="p.value",FALSE,TRUE)
+	   if(class(fit.model)[1] == "lm"){
+	       fit.x <- fit.model
+	       if(is.null(fit.model$weights)) weights <- matrix(1,length(fit.model$residuals),1) else weights <- fit.model$weights
+		   if(is.null(fit.model$offset)) offset <- matrix(0,length(fit.model$residuals),1) else offset <- fit.model$offset
+		   if(inter) fit.null <- lm(fit.model$model[,1] ~ 1, offset=offset, weights=weights)
+		   else  fit.null <- lm(fit.model$model[,1] ~ 0, offset=offset, weights=weights)
+		   denr2 <- sum(resid(fit.null)^2*weights)/fit.null$df.residual
+		   sigma20 <- sum(resid(fit.model)^2*weights)/fit.model$df.residual
+		   if(direction=="forward") fit.x <- eval(parse(text=paste("lm(",oldformula,", offset=offset, weights=weights, data=datas)")))
+		   cat("\nInitial model:\n")
+		   cat(oldformula,"\n")
+		   newformula <- oldformula
+		   sale <- " "
+		   names.col <- c("Df","AIC  ","BIC  ","R-squared*","PRESS+","CP**","p-value")
+		   if(criterion=="p.value") names.col[7] <- "p-value^"
+		   delta <- c(1,1,1,-1,1,1,-1)
+		   id0 <-  c(" ","aic","bic","adjr2","press","cp","p.value")==criterion
+	       if(direction=="forward") delta <- c(1,1,1,-1,1,1,1)
+		   
+		   while(tol){
+				if(length(attr(fit.x$terms,"term.labels"))==0) names.effects <- "" else names.effects <- attr(fit.x$terms,"term.labels")
+				if(length(attr(model.matrix(fit.x),"assign"))==0) num.effects <- 0 else num.effects <- attr(model.matrix(fit.x),"assign")
+				if(direction=="backward"){
+				    results <- matrix(NA,max(num.effects)+1,7)
+				    if(criterion=="p.value") results[1,ncol(results)] <- -1
+				    if(count == 0) results[1,2:6] <- lmstats(fit.x) else results[1,2] <- 0
+					s <- attr(fit.x$terms,"factors")
+					for(i in 1:length(names.effects)){
+					   if(all(apply(as.matrix(s[,-i]*s[,i]),2,sum) < sum(s[,i]))){
+						 formula0 <- constr.formula(fit.x,inter,term=names.effects[i],action="-")
+						 fit0 <- eval(parse(text=paste("lm(",formula0,", offset=offset, weights=weights, data=datas)")))
+					   	 results[i+1,1] <- fit0$df.residual - fit.x$df.residual
+					   	 results[i+1,2:6] <- lmstats(fit0)
+					   	 results[i+1,7] <- p.values(fit.x,i,num.effects)
+					   }	
+					}
+					names.effects <- cbind("-",names.effects)
+				}
+				if(direction=="forward"){
+				  outs <- out(fit.model,names.effects)
+				  s2 <- as.matrix(attr(fit.model$terms,"factors")[,outs])
+				  names.effects <- attr(fit.model$terms,"term.labels")[outs]
+				  results <- matrix(NA,length(names.effects)+1,7)
+				  if(criterion=="p.value") results[1,ncol(results)] <- 1
+				  if(count == 0) results[1,2:6] <- lmstats(fit.x) else results[1,2] <- 0
+				  for(i in 1:length(names.effects)){
+				     if(sum(apply(as.matrix(s2[,-i]),2,function(x) sum(s2[,i]*x)==sum(x)))==0){
+						 formula0 <- constr.formula(fit.x,inter,term=names.effects[i],action="+")
+						 fit0 <- eval(parse(text=paste("lm(",formula0,", offset=offset, weights=weights, data=datas)")))
+					   	 results[i+1,1] <- fit.x$df.residual - fit0$df.residual
+					   	 results[i+1,2:6] <- lmstats(fit0)
+					   	 results[i+1,7] <- p.values(fit0,max(num.effects) + 1)
+					 }
+				  }
+				  names.effects <- cbind("+",names.effects)
+				}
+				shows <- !is.na(results[,2])
+				results <- cbind(results[shows,1],results[shows,id0],results[shows,!id0])
+				colnames(results) <- c(names.col[1],names.col[id0],names.col[!id0])
+				results <- results[,-3]
+				if(count > 0){
+				  if(criterion=="p.value") results[1,-c(1,2)] <- recicla
+				  else results[1,-c(1,7)] <- recicla
+				}
+				names.effects2 <- cbind(names.effects[shows[-1],1],names.effects[shows[-1],2])
+				names.effects3 <- c("<none>",paste(names.effects2[,1],names.effects2[,2]))
+				rownames(results) <- names.effects3
+				ids <- min(results[,2]*delta[id0])==(results[,2]*delta[id0])
+				if(sum(ids)>1) ids <- min(results[,3])==(results[,3])
+	            cat("\nStep",count,": ",sale,"\n")
+				indexes <- sort(results[,2]*delta[id0],index=TRUE)$ix
+				if(criterion=="p.value"){
+				   recicla <- results[names.effects3==names.effects3[ids],-c(1,2)]
+				   if(direction=="backward") ps <- ifelse(max(results[,2]) > level,TRUE,FALSE)
+				   if(direction=="forward") ps <- ifelse(min(results[,2]) < level,TRUE,FALSE)				   
+				   results[names.effects3=="<none>",2] <- NA
+				}else recicla <- results[names.effects3==names.effects3[ids],-c(1,7)]
+
+				results2 <- cbind(results[,1],NA,results[,-1])
+				colnames(results2) <- c(colnames(results)[1],"",colnames(results)[-1])
+				printCoefmat(results2[indexes,],cs.ind=1,tst.ind=3:8,dig.tst=4,na.print=" ")			
+				count <- count + 1
+				if(names.effects3[ids]!="<none>" & ps==TRUE){
+				  ids <- ids[-1]
+				  sale <- paste(names.effects2[ids,1],names.effects2[ids,2])
+				  newformula <- constr.formula(fit.x,inter,term=names.effects2[ids,2],action=names.effects2[ids,1])
+				  if(nrow(names.effects)==1){
+				    tol <- FALSE
+					cat("\nStep",count,": ",sale,"\n")
+				  }	
+				  new <- paste("lm(",newformula,", offset=offset, weights=weights, data=datas)")
+				  fit.x <- eval(parse(text=new))
+				}else tol <- FALSE  
+			}
+			cat("\n*  Adjusted R-squared\n")
+			cat("+  Allen's PRESS divided by the sample size\n")
+			cat("** Mallows's CP\n")			
+			if(criterion=="p.value" & direction=="backward") cat("^  Effects are dropped when their p-values are higher than",level)
+			if(criterion=="p.value" & direction=="forward")  cat("^  Effects are included when their p-values are lower than",level)			
+			cat("\n\nFinal model:\n")
+			cat(newformula,"\n\n")
+		}
+	    if(class(fit.model)[1] == "glm"){
+		   cat("\n  Family: ",fit.model$family$family,"\n")
+		   cat("    Link: ",fit.model$family$link,"\n")
+		   if(fit.model$family$family=="quasi"){
+		     if(fit.model$family$varfun!="constant") cat("Variance:  proportional to",fit.model$family$varfun,"\n")
+			 else cat("Variance: ",fit.model$family$varfun,"\n")
+		   }	 
+		   cat("\nInitial model:\n")
+		   fit.x <- fit.model
+		   if(direction=="forward") fit.x <- eval(parse(text=paste("glm(",oldformula,", weights=fit.model$prior.weights, offset=fit.model$offset, family=fit.model$family, data=datas)")))
+		   cat(oldformula,"\n")
+		   newformula <- oldformula
+		   sale <- " "
+		   inter <- ifelse(length(coef(fit.model))>0,names(coef(fit.model))[1]=="(Intercept)",FALSE)
+		   if(fit.model$family$family=="quasi" || fit.model$family$family=="quasibinomial" || fit.model$family$family=="quasipoisson"){
+		     quasi <- TRUE
+			 if(criterion=="bic" || criterion=="aic") criterion <- "adjr2d"
+		   }else quasi <- FALSE
+		   if(inter || fit.model$family$family=="gaussian"){
+			 if(inter) fit.null <- glm(fit.model$y ~ 1, family=fit.model$family, offset=fit.model$offset, weights=fit.model$prior.weights)
+			 else fit.null <- glm(fit.model$y ~ 0, family=fit.model$family, offset=fit.model$offset, weights=fit.model$prior.weights)
+			 denr2  <- fit.null$deviance/fit.null$df.residual
+	         denr22 <- sum(resid(fit.null,type="pearson")^2)/fit.null$df.residual
+		   }
+		   if(!inter & direction=="forward")
+		     stop("The forward variable selection and non-intercept models are not compatible!!",call.=FALSE)
+		   names.col <- c("Df","AIC  ","BIC  ","Deviance+","Pearson^","p-value*")
+		   delta <- c(1,1,1,-1,-1,-1)
+		   id0 <-  c(" ","aic","bic","adjr2d","adjr2p","p.value")==criterion
+		   if(!inter) delta <- c(1,1,1,1,1,-1)
+		   if(direction=="forward") delta[6] <- 1
+		   while(tol){
+				if(length(attr(fit.x$terms,"term.labels"))==0) names.effects <- "" else names.effects <- attr(fit.x$terms,"term.labels")
+				if(length(attr(model.matrix(fit.x),"assign"))==0) num.effects <- 0 else num.effects <- attr(model.matrix(fit.x),"assign")
+
+				if(direction=="backward"){
+					results <- matrix(NA,max(num.effects)+1,6)
+					if(criterion=="p.value") results[1,ncol(results)] <- -1
+					if(count == 0) results[1,2:(ncol(results)-1)] <- glmstats(fit.x) else results[1,ifelse(quasi,4,2)] <- 0
+					s <- attr(fit.x$terms,"factors")
+					for(i in 1:max(num.effects)){
+					   if(all(apply(as.matrix(s[,-i]*s[,i]),2,sum) < sum(s[,i]))){
+						 formula0 <- constr.formula(fit.x,inter,term=names.effects[i],action="-")
+						 fit0 <- try(eval(parse(text=paste("glm(",formula0,", weights=fit.x$prior.weights, offset=fit.x$offset, family=fit.x$family, data=datas)"))),silent=TRUE)
+						 if(!is.list(fit0))	fit0 <- eval(parse(text=paste("glm(",formula0,", weights=fit.x$prior.weights, offset=fit.x$offset, family=fit.x$family, data=datas, mustart=fitted(fit.x))")))
+						 results[i+1,1] <- fit0$df.residual - fit.x$df.residual
+					   	 results[i+1,2:5] <- glmstats(fit0)
+					   	 results[i+1,6] <- ifelse(test=="Wald",p.values2(fit.x,i,num.effects),anova(fit0,fit.x,test="LRT")[[5]][2])
+					   }	
+					}
+					names.effects <- cbind("-",names.effects)
+				}
+				if(direction=="forward"){
+				  outs <- out(fit.model,names.effects)
+				  s2 <- as.matrix(attr(fit.model$terms,"factors")[,outs])
+				  names.effects <- attr(fit.model$terms,"term.labels")[outs]
+				  results <- matrix(NA,length(names.effects)+1,6)
+				  if(criterion=="p.value") results[1,ncol(results)] <- 1
+				  if(count == 0) results[1,2:(ncol(results)-1)] <- glmstats(fit.x) else results[1,ifelse(quasi,4,2)] <- 0
+				  for(i in 1:length(names.effects)){
+				     if(sum(apply(as.matrix(s2[,-i]),2,function(x) sum(s2[,i]*x)==sum(x)))==0){ 
+						 formula0 <- constr.formula(fit.x,inter,term=names.effects[i],action="+")
+						 fit0 <- try(eval(parse(text=paste("glm(",formula0,", weights=fit.x$prior.weights, offset=fit.x$offset, family=fit.x$family, data=datas)"))),silent=TRUE)
+						 if(!is.list(fit0))	fit0 <- eval(parse(text=paste("glm(",formula0,", weights=fit.x$prior.weights, offset=fit.x$offset, family=fit.x$family, data=datas, mustart=fitted(fit.x))")))
+						 results[i+1,1] <- fit.x$df.residual - fit0$df.residual
+					   	 results[i+1,2:5] <- glmstats(fit0)
+					   	 results[i+1,6] <- ifelse(test=="Wald",p.values2(fit0,max(num.effects) + 1),anova(fit.x,fit0,test="LRT")[[5]][2])
+					 }
+				  }
+				  names.effects <- cbind("+",names.effects)
+				}
+				if(quasi) shows <- !is.na(results[,4]) else shows <- !is.na(results[,2])
+				results <- cbind(results[shows,1],results[shows,id0],results[shows,!id0])
+				colnames(results) <- c(names.col[1],names.col[id0],names.col[!id0])
+				if(quasi) results <- results[,-c(3,4,5)] else results <- results[,-3]
+				if(count > 0){
+				  if(criterion=="p.value") results[1,-c(1,2)] <- recicla
+				  else results[1,-c(1,ifelse(quasi,4,6))] <- recicla 
+				}
+				names.effects2 <- cbind(names.effects[shows[-1],1],names.effects[shows[-1],2])
+				names.effects3 <- c("<none>",paste(names.effects2[,1],names.effects2[,2]))
+				rownames(results) <- names.effects3
+				ids <- min(results[,2]*delta[id0])==(results[,2]*delta[id0])
+				if(sum(ids)>1) ids <- min(results[,3])==(results[,3])
+	            cat("\nStep",count,": ",sale,"\n")
+				indexes <- sort(results[,2]*delta[id0],index=TRUE)$ix
+				if(criterion=="p.value"){
+				   recicla <- results[names.effects3==names.effects3[ids],-c(1,2)]
+				   if(direction=="backward") ps <- ifelse(max(results[,2]) > level,TRUE,FALSE)
+				   if(direction=="forward") ps <- ifelse(min(results[,2]) < level,TRUE,FALSE)				   
+				   results[names.effects3=="<none>",2] <- NA
+				}else recicla <- results[names.effects3==names.effects3[ids],-c(1,ncol(results))]
+				if(quasi) tst.ind <- 3:5  else tst.ind <- 3:7
+				results2 <- cbind(results[,1],NA,results[,-1])
+				colnames(results2) <- c(colnames(results)[1],"",colnames(results)[-1])
+   			    printCoefmat(results2[indexes,],cs.ind=1,tst.ind=tst.ind,dig.tst=4,na.print=" ")
+				count <- count + 1
+				if(names.effects3[ids]!="<none>" & ps==TRUE){
+				  ids <- ids[-1]
+				  sale <- paste(names.effects2[ids,1],names.effects2[ids,2])
+				  newformula <- constr.formula(fit.x,inter,term=names.effects2[ids,2],action=names.effects2[ids,1])
+				  if(nrow(names.effects)==1 || (nrow(names.effects)==2 && !inter)){
+				    tol <- FALSE
+					cat("\nStep",count,": ",sale,"\n")
+				  }	
+				  new <- paste("glm(",newformula,", weights=fit.x$prior.weights, offset=fit.x$offset, family=fit.x$family, data=datas)")
+				  fit.x <- eval(parse(text=new))
+				}else tol <- FALSE  
+			}
+			if(inter || fit.model$family$family=="gaussian"){
+			  cat("\n+ Adjusted R-squared based on the residual deviance")
+			  cat("\n^ Adjusted R-squared based on the Pearson statistic")
+			}else{
+			  cat("\n+ Deviance-based estimate of the dispersion parameter")
+			  cat("\n^ Pearson-based estimate of the dispersion parameter")
+			}
+			cat("\n* p-value of the",test,"test")
+			if(criterion=="p.value" & direction=="backward") cat(" ( effects are dropped when their p-values are higher than",level,")")
+			if(criterion=="p.value" & direction=="forward")  cat(" ( effects are included when their p-values are lower than",level,")")			
+			cat("\n\nFinal model:\n")
+			cat(newformula,"\n\n")
+        }
+		if(class(fit.model)[1] == "negbin"){
+		   cat("\nFamily: Negative Binomial \n")
+		   cat("  Link:",fit.model$family$link,"\n")
+		   cat("\nInitial model:\n")
+		   fit.x <- fit.model
+		   if(is.null(fit.model$offset)) offset <- matrix(0,length(fit.model$residuals),1)
+		   assign("links", fit.model$family$link, envir = .GlobalEnv)
+		   if(direction=="forward") fit.x <- eval(parse(text=paste("glm.nb(",oldformula,"+offset(offset),weights=fit.x$prior.weights,link=links,data=datas)")))
+		   inter <- ifelse(length(coef(fit.model))>0,names(coef(fit.model))[1]=="(Intercept)",FALSE)
+		   if(!inter & direction=="forward")
+		     stop("The forward variable selection and non-intercept models are not compatible!!",call.=FALSE)
+		   cat(oldformula,"\n")
+		   newformula <- oldformula
+		   sale <- " "
+		   names.col <- c("Df","AIC  ","BIC  ","p-value*")
+		   delta <- c(1,1,1,-1)
+		   id0 <-  c(" ","aic","bic","p.value")==criterion
+		   if(direction=="forward") delta <- c(1,1,1,1)
+
+		   while(tol){
+				if(length(attr(fit.x$terms,"term.labels"))==0) names.effects <- "" else names.effects <- attr(fit.x$terms,"term.labels")
+				if(length(attr(model.matrix(fit.x),"assign"))==0) num.effects <- 0 else num.effects <- attr(model.matrix(fit.x),"assign")
+
+				if(direction=="backward"){
+					results <- matrix(NA,length(names.effects)+1,4)
+					if(criterion=="p.value") results[1,ncol(results)] <- -1
+					if(count == 0) results[1,2:3] <- c(AIC(fit.x),BIC(fit.x)) else results[1,2] <- 0
+					s <- attr(fit.x$terms,"factors")
+					for(i in 1:length(names.effects)){
+					   if(all(apply(as.matrix(s[,-i]*s[,i]),2,sum) < sum(s[,i]))){
+						 formula0 <- constr.formula(fit.x,inter,term=names.effects[i],action="-")
+						 formula0 <- paste(formula0,"+ offset(offset)")
+						 fit0 <- eval(parse(text=paste("glm.nb(",formula0,", weights=fit.x$prior.weights, link=links, data=datas)")))
+					   	 results[i+1,1] <- fit0$df.residual - fit.x$df.residual
+					   	 results[i+1,2:3] <- c(AIC(fit0),BIC(fit0))
+					   	 results[i+1,4] <- ifelse(test=="Wald",p.values2(fit.x,i,num.effects),anova(fit.x,fit0)[[8]][2])
+					   }	
+					}
+					names.effects <- cbind("-",names.effects)
+				}
+				if(direction=="forward"){
+					outs <- out(fit.model,names.effects)
+					s2 <- as.matrix(attr(fit.model$terms,"factors")[,outs])
+					names.effects <- attr(fit.model$terms,"term.labels")[outs]
+					results <- matrix(NA,length(names.effects)+1,4)
+					if(criterion=="p.value") results[1,4] <- 1
+					if(count == 0) results[1,2:3] <- c(AIC(fit.x),BIC(fit.x)) else results[1,2] <- 0
+					  for(i in 1:length(names.effects)){
+					     if(sum(apply(as.matrix(s2[,-i]),2,function(x) sum(s2[,i]*x)==sum(x)))==0){ 
+							 formula0 <- constr.formula(fit.x,inter,term=names.effects[i],action="+")
+						     formula0 <- paste(formula0,"+ offset(offset)")
+						     fit0 <- eval(parse(text=paste("glm.nb(",formula0,", weights=fit.x$prior.weights, link=links, data=datas)")))
+						   	 results[i+1,1] <- fit.x$df.residual - fit0$df.residual
+						   	 results[i+1,2:3] <- c(AIC(fit0),BIC(fit0))
+						   	 results[i+1,4] <- ifelse(test=="Wald",p.values2(fit0,max(num.effects) + 1),anova(fit.x,fit0)[[8]][2])
+						 }
+					  }
+					  names.effects <- cbind("+",names.effects)
+				}
+				shows <- !is.na(results[,2])
+				results <- cbind(results[shows,1],results[shows,id0],results[shows,!id0])
+				colnames(results) <- c(names.col[1],names.col[id0],names.col[!id0])
+				results <- results[,-3]
+				if(count > 0){
+				  if(criterion=="p.value") results[1,-c(1,2)] <- recicla
+				  else results[1,-c(1,4)] <- recicla 
+				}
+				names.effects2 <- cbind(names.effects[shows[-1],1],names.effects[shows[-1],2])
+				names.effects3 <- c("<none>",paste(names.effects2[,1],names.effects2[,2]))
+				rownames(results) <- names.effects3
+				ids <- min(results[,2]*delta[id0])==(results[,2]*delta[id0])
+				if(sum(ids)>1) ids <- min(results[,3])==(results[,3])
+	            cat("\nStep",count,": ",sale,"\n")
+				indexes <- sort(results[,2]*delta[id0],index=TRUE)$ix
+				if(criterion=="p.value"){
+				   recicla <- results[names.effects3==names.effects3[ids],-c(1,2)]
+				   if(direction=="backward") ps <- ifelse(max(results[,2]) > level,TRUE,FALSE)
+				   if(direction=="forward") ps <- ifelse(min(results[,2]) < level,TRUE,FALSE)				   
+				   results[names.effects3=="<none>",2] <- NA
+				}else recicla <- results[names.effects3==names.effects3[ids],-c(1,4)]
+				
+				results2 <- cbind(results[,1],NA,results[,-1])
+				colnames(results2) <- c(colnames(results)[1],"",colnames(results)[-1])
+				printCoefmat(results2[indexes,],cs.ind=1,tst.ind=c(3,4,5),dig.tst=4,na.print=" ")			
+				count <- count + 1
+				if(names.effects3[ids]!="<none>" & ps==TRUE){
+				  ids <- ids[-1]
+				  sale <- paste(names.effects2[ids,1],names.effects2[ids,2])
+				  newformula <- constr.formula(fit.x,inter,term=names.effects2[ids,2],action=names.effects2[ids,1])
+				  newformula <- paste(newformula,"+ offset(offset)")
+				  if(nrow(names.effects)==1 || (nrow(names.effects)==2 && !inter)){
+				    tol <- FALSE
+					cat("\nStep",count,": ",sale,"\n")
+				  }	
+ 				  new <- paste("glm.nb(",newformula,", weights=fit.x$prior.weights, link=links, data=datas)")
+				  fit.x <- eval(parse(text=new))
+				}else tol <- FALSE  
+			}
+			cat("\n* p-value of the",test,"test")
+			if(criterion=="p.value" & direction=="backward") cat(" ( effects are dropped when their p-values are higher than",level,")")
+			if(criterion=="p.value" & direction=="forward")  cat(" ( effects are included when their p-values are lower than",level,")")			
+			cat("\n\nFinal model:\n")
+			cat(gsub("+ offset(offset)","",newformula,fixed=TRUE),"\n\n")
+		}
+	    if(class(fit.model)[1] == "gee"){
+		   cat("\nVariance to Mean Relation: ",fit.model$model$varfun,"\n")
+		   cat("                     Link: ",fit.model$family$link,"\n")
+		   cat("    Correlation Structure: ",fit.model$model$corstr)
+		   if(fit.model$model$corstr=="stat_M_dep" || fit.model$model$corstr=="non_stat_M_dep" || fit.model$model$corstr=="AR-M")
+		   cat(", M =",fit.model$model$M,"\n") else cat("\n")
+		   cat("\nInitial model:\n")
+		   callnano <- fit.model$call
+		   a <- grepl("offset",attr(fit.model$terms,"predvars"))
+		   offset <- attr(fit.model$terms,"predvars")[a]
+		   nano <- gsub(" ","",unlist(strsplit(deparse(fit.model$call),",")),fixed=TRUE)
+		   b <- grepl("data",nano)
+		   c <- grepl("subset",nano)
+		   if(any(b)) datas <- sub("data=","",nano[b],fixed=TRUE) else datas <- "parent.frame()"
+		   if(any(c)){
+		     subsets <- sub("))",")",sub("subset=","",nano[c],fixed = TRUE),fixed = TRUE)
+ 		     m <- eval(parse(text=paste("get_all_vars(fit.model,data=subset(",datas,",subset=",subsets,")")))
+		   }else m <- eval(parse(text=paste("get_all_vars(fit.model,data=",datas,")")))
+		   m <- na.omit(m)
+		   d <- any(grepl("scale.fix=TRUE",gsub(" ","",fit.model$call)))
+		   fit.x <- fit.model
+		   oldformula2 <- ifelse(any(a),paste(oldformula,"+",offset),oldformula)
+		   callnano$formula <- as.formula(oldformula2)
+		   if(direction=="forward") fit.x <- quiet(eval(callnano))
+		   cat(oldformula,"\n")
+		   newformula <- oldformula
+		   sale <- " "
+		   inter <- ifelse(length(coef(fit.model))>0,names(coef(fit.model))[1]=="(Intercept)",FALSE)
+		   if(!inter & direction=="forward") stop("The forward variable selection and non-intercept models are not compatible!!",call.=FALSE)
+		   newformula <- oldformula
+		   sale <- " "
+		   names.col <- c("Df","QIC  ","p-value")
+		   delta <- c(1,1,-1)
+		   id0 <-  c(" ","qic","p.value")==criterion
+		   if(direction=="forward") delta <- c(1,1,1)
+		   
+		   while(tol){
+				if(length(attr(fit.x$terms,"term.labels"))==0) names.effects <- "" else names.effects <- attr(fit.x$terms,"term.labels")
+				if(length(attr(model.matrix(as.formula(fit.x$call$formula),m),"assign"))==0) num.effects <- 0 else num.effects <- attr(model.matrix(as.formula(fit.x$call$formula),m),"assign")
+
+				if(direction=="backward"){
+					results <- matrix(NA,length(names.effects)+1,3)
+					if(criterion=="p.value") results[1,ncol(results)] <- -1
+					if(count == 0) results[1,2] <- QIC(fit.x,m,d) else results[1,2] <- 0
+					s <- attr(fit.x$terms,"factors")
+					for(i in 1:length(names.effects)){
+					   if(all(apply(as.matrix(s[,-i]*s[,i]),2,sum) < sum(s[,i]))){
+						 formula0 <- constr.formula(fit.x,inter,term=names.effects[i],action="-")
+						 formula01 <- ifelse(any(a),paste(formula0,"+",offset),formula0)
+		                 callnano$formula <- as.formula(formula01)
+						 fit0 <- quiet(eval(callnano))
+					   	 results[i+1,1] <- length(coef(fit.x)) - length(coef(fit0))
+					   	 results[i+1,2] <- QIC(fit0,m,d)
+					   	 results[i+1,3] <- p.values2(fit.x,i,num.effects)
+					   }	
+					}
+					names.effects <- cbind("-",names.effects)
+				}
+				if(direction=="forward"){
+					outs <- out(fit.model,names.effects)
+					s2 <- as.matrix(attr(fit.model$terms,"factors")[,outs])
+					names.effects <- attr(fit.model$terms,"term.labels")[outs]
+					results <- matrix(NA,length(names.effects)+1,3)
+					if(criterion=="p.value") results[1,3] <- 1
+					if(count == 0) results[1,2] <- QIC(fit.x,m,d) else results[1,2] <- 0
+					  for(i in 1:length(names.effects)){
+					     if(sum(apply(as.matrix(s2[,-i]),2,function(x) sum(s2[,i]*x)==sum(x)))==0){ 
+						   formula0 <- constr.formula(fit.x,inter,term=names.effects[i],action="+")
+						   formula01 <- ifelse(any(a),paste(formula0,"+",offset),formula0)
+		                   callnano$formula <- as.formula(formula01)
+						   fit0 <- quiet(eval(callnano))
+						   results[i+1,1] <- length(coef(fit0)) - length(coef(fit.x))
+						   results[i+1,2] <- QIC(fit0,m,d)
+						   results[i+1,3] <- p.values2(fit0,max(num.effects) + 1)
+						 }
+					  }
+					  names.effects <- cbind("+",names.effects)
+				}
+				shows <- !is.na(results[,2])
+				results <- cbind(results[shows,1],results[shows,id0],results[shows,!id0])
+				colnames(results) <- c(names.col[1],names.col[id0],names.col[!id0])
+				results <- results[,-3]
+				if(count > 0){
+				  if(criterion=="p.value") results[1,-c(1,2)] <- recicla
+				  else results[1,-c(1,3)] <- recicla 
+				}
+				names.effects2 <- cbind(names.effects[shows[-1],1],names.effects[shows[-1],2])
+				names.effects3 <- c("<none>",paste(names.effects2[,1],names.effects2[,2]))
+				rownames(results) <- names.effects3
+				ids <- min(results[,2]*delta[id0])==(results[,2]*delta[id0])
+				if(sum(ids)>1) ids <- min(results[,3])==(results[,3])
+	            cat("\nStep",count,": ",sale,"\n")
+				indexes <- sort(results[,2]*delta[id0],index=TRUE)$ix
+				if(criterion=="p.value"){
+				   recicla <- results[names.effects3==names.effects3[ids],-c(1,2)]
+				   if(direction=="backward") ps <- ifelse(max(results[,2]) > level,TRUE,FALSE)
+				   if(direction=="forward") ps <- ifelse(min(results[,2]) < level,TRUE,FALSE)				   
+				   results[names.effects3=="<none>",2] <- NA
+				}else recicla <- results[names.effects3==names.effects3[ids],-c(1,3)]
+				
+				results2 <- cbind(results[,1],NA,results[,-1])
+				colnames(results2) <- c(colnames(results)[1],"",colnames(results)[-1])
+				printCoefmat(results2[indexes,],cs.ind=1,tst.ind=c(3,4),dig.tst=4,na.print=" ")			
+				count <- count + 1
+				if(names.effects3[ids]!="<none>" & ps==TRUE){
+				  ids <- ids[-1]
+				  sale <- paste(names.effects2[ids,1],names.effects2[ids,2])
+				  newformula <- constr.formula(fit.x,inter,term=names.effects2[ids,2],action=names.effects2[ids,1])
+				  newformula1 <- ifelse(any(a),paste(newformula,"+",offset),newformula)
+		          callnano$formula <- as.formula(newformula1)
+				  if(nrow(names.effects)==1 || (nrow(names.effects)==2 && !inter)){
+				    tol <- FALSE
+					cat("\nStep",count,": ",sale,"\n")
+				  }	
+				  fit.x <- quiet(eval(callnano))
+				}else tol <- FALSE  
+			}
+			if(criterion=="p.value" & direction=="backward") cat(" Effects are dropped when their p-values are higher than",level)
+			if(criterion=="p.value" & direction=="forward")  cat(" Effects are included when their p-values are lower than",level)			
+			cat("\n\nFinal model:\n")
+			cat(newformula,"\n\n")
+		}
+		options(warn = oldw)
+}
+
+
+
+gof_glm <- function(fit.model){
+	if(class(fit.model)[1] != "glm" & class(fit.model)[1] != "lm" & class(fit.model)[1] != "negbin" & class(fit.model)[1] != "gee") 
+	  stop("Only lm-, glm-, glm.nb- and gee-type objects are supported!!",call.=FALSE)
+	   lmstats <- function(fitt){
+	              if(is.null(fitt$weights)) weights <- matrix(1,length(fitt$residuals),1) else weights <- fitt$weights
+				  if(any(weights == 0)) stop("Only positive weights are allowed!!",call.=FALSE)	
+				  if(is.null(fitt$offset)) offset <- matrix(0,length(fitt$residuals),1) else offset <- fitt$offset
+				  summ <- summary(fitt)
+				  X <- model.matrix(fitt)
+			      if(length(X)!=0){
+				      sigma2 <- sum(weights*fitt$residuals^2)/fitt$df.residual
+		       	      Xw <- X*matrix(sqrt(weights),nrow(X),ncol(X))
+	                  salida <- svd(Xw)
+	                  h <- apply(salida$u^2,1,sum)
+			          press <- sum((resid(fitt)*sqrt(weights)/(1-h))^2)/nrow(X)
+		   	      }else press <- sum(resid(fitt)^2)/nrow(X)
+				  a1 <- rbind(summ$sigma^2,summ$r.squared,summ$adj.r.squared,press,-2*as.numeric(logLik(fitt)),AIC(fitt),BIC(fitt))
+				  a1
+	   }
+	   glmstats <- function(fitt){
+	   			   inter <- ifelse(length(coef(fitt))>0,names(coef(fitt))[1]=="(Intercept)",FALSE)
+				   if(inter){
+				     fit.null <- glm(fitt$y ~ 1, family=fitt$family, offset=fitt$offset, weights=fitt$prior.weights)
+				     r21 <- 1 - (fitt$deviance/fitt$df.residual)/(fit.null$deviance/fit.null$df.residual)
+	                 r22 <- 1 - (sum(resid(fitt,type="pearson")^2)/fitt$df.residual)/(sum(resid(fit.null,type="pearson")^2)/fit.null$df.residual)
+					 a1 <- rbind(fitt$deviance,fitt$deviance/fitt$df.residual,sum(resid(fitt,type="pearson")^2),sum(resid(fitt,type="pearson")^2)/fitt$df.residual,r21,r22,-2*as.numeric(logLik(fit.model)),AIC(fitt),BIC(fitt))
+				   }else a1 <- rbind(fitt$deviance,fitt$deviance/fitt$df.residual,sum(resid(fitt,type="pearson")^2),sum(resid(fitt,type="pearson")^2)/fitt$df.residual,-2*as.numeric(logLik(fit.model)),AIC(fitt),BIC(fitt))
+	   			   a2 <- matrix(NA,length(a1),1)
+				   a2[1] <- fitt$df.residual
+				   a2[3] <- fitt$df.residual
+				   cbind(a2,a1)
+	   }		   
+	   if(class(fit.model)[1] == "lm"){
+	       cmat <- lmstats(fit.model)
+		   rownames(cmat) <- c("Dispersion parameter   ", "Multiple R-squared   ", "Adjusted R-squared   ", "Allen's PRESS*", "-2*log-Likelihood", "AIC", "BIC")
+		   colnames(cmat) <- c("Value")
+		   printCoefmat(cmat,digits=5,na.print=" ")
+		   cat("\n* value divided by the sample size\n\n")
+	   }
+	   if(class(fit.model)[1] == "glm"){
+	       if(class(fit.model)[1] == "glm") if(any(fit.model$prior.weights == 0)) stop("Only positive weights are allowed!!",call.=FALSE)	
+	       cmat <- glmstats(fit.model)
+		   if(nrow(cmat)==9)
+		   rownames(cmat) <- c("Residual deviance   ", "Deviance-based estimate of dispersion parameter",
+		   "Pearson's statistic ", "Pearson-based estimate of dispersion parameter", "Adjusted R-squared based on the residual deviance",
+		   "Adjusted R-squared based on the Pearson's statistic", "-2*log-Likelihood", "AIC", "BIC")
+		   else rownames(cmat) <- c("Residual deviance   ", "Deviance-based estimate of dispersion parameter",
+		   "Pearson's statistic ", "Pearson-based estimate of dispersion parameter", "-2*log-Likelihood", "AIC", "BIC")
+		   colnames(cmat) <- c("Df","Value")
+		   if(fit.model$family$family=="poisson" || fit.model$family$family=="binomial") cmat <- cmat[-c(2,4),]
+		   if(fit.model$family$family=="quasipoisson" || fit.model$family$family=="quasibinomial" ||
+		      fit.model$family$family=="quasi")
+			 cmat <- cmat[-c(nrow(cmat),nrow(cmat)-1,nrow(cmat)-2),]
+		   cat("\n  Family: ",fit.model$family$family,"\n")
+		   cat("    Link: ",fit.model$family$link,"\n")
+		   if(fit.model$family$family=="quasi"){
+		     if(fit.model$family$varfun!="constant") cat("Variance:  proportional to",fit.model$family$varfun,"\n")
+			 else cat("Variance: ",fit.model$family$varfun,"\n")
+		   }	 
+		   printCoefmat(cmat,digits=5,na.print=" ")
+		   cat("\n\n")
+	   }
+	   if(class(fit.model)[1] == "negbin"){
+		   cmat <- rbind(-2*as.numeric(logLik(fit.model)),AIC(fit.model),BIC(fit.model))
+		   rownames(cmat) <- c("-2*log-Likelihood", "AIC", "BIC")																	 
+		   colnames(cmat) <- c("Value")
+		   cat("\nFamily: Negative Binomial \n")
+		   cat("  Link:",fit.model$family$link,"\n")
+		   printCoefmat(cmat,digits=5,na.print=" ")
+		   cat("\n\n")
+	   }
+	   if(class(fit.model)[1] == "gee"){
+	       oldw <- getOption("warn")
+	       options(warn = -1)
+		   callnano <- fit.model$call
+		   a <- grepl("offset",attr(fit.model$terms,"predvars"))
+		   offset <- attr(fit.model$terms,"predvars")[a]
+		   nano <- gsub(" ","",unlist(strsplit(deparse(fit.model$call),",")),fixed=TRUE)
+		   b <- grepl("data",nano)
+		   c <- grepl("subset",nano)
+		   if(any(b)) datas <- sub("data=","",nano[b],fixed=TRUE) else datas <- "parent.frame()"
+		   if(any(c)){
+		     subsets <- sub("))",")",sub("subset=","",nano[c],fixed = TRUE),fixed = TRUE)
+ 		     m <- eval(parse(text=paste("get_all_vars(fit.model,data=subset(",datas,",subset=",subsets,")")))
+		   }else m <- eval(parse(text=paste("get_all_vars(fit.model,data=",datas,")")))
+		   m <- na.omit(m)
+		   d <- any(grepl("scale.fix=TRUE",gsub(" ","",fit.model$call)))
+		   etas <- fit.model$linear.predictors
+		   fitx0 <- glm(as.formula(paste(attr(fit.model$terms,"variables")[2]," ~ -1 + offset(etas)")), family=fit.model$family, data=m)
+		   w <- sqrt(fitx0$weights)
+		   phi_hat0 <- sum(resid(fitx0,type="pearson")^2)/(length(fit.model$y)-length(coef(fit.model)))
+		   X <- model.matrix(as.formula(fit.model$call$formula),m)
+		   Xw <- matrix(w,nrow(X),ncol(X))*X
+		   vcov.0 <- solve(t(Xw)%*%Xw)
+		   phi_hat <- fit.model$scale
+	       if(d) phi_hat0 <- phi_hat
+		   if(tolower(fit.model$model$varfun)=="gaussian") qll <- -(1/2)*(fit.model$y - fitted(fit.model))^2
+		   if(tolower(fit.model$model$varfun)=="binomial") qll <- fitx0$prior.weights*(fitx0$y*log(fitted(fit.model)) + (1-fitx0$y)*log(1-fitted(fit.model)))
+		   if(tolower(fit.model$model$varfun)=="poisson") qll <- fit.model$y*log(fitted(fit.model)) - fitted(fit.model)
+		   if(tolower(fit.model$model$varfun)=="gamma") qll <- -fit.model$y/fitted(fit.model) - log(fitted(fit.model))
+		   if(tolower(fit.model$model$varfun)=="inverse.gaussian") qll <- (fitted(fit.model) - (1/2)*fit.model$y)/(fitted(fit.model))^2
+		   QIC <- as.matrix(-2*sum(qll)/phi_hat + 2*sum(diag(solve(vcov.0*phi_hat0)%*%fit.model$robust.variance)))
+		   cat("\nVariance to Mean Relation: ",fit.model$model$varfun,"\n")
+		   cat("                     Link: ",fit.model$family$link,"\n")
+		   cat("    Correlation Structure: ",fit.model$model$corstr)
+		   if(fit.model$model$corstr=="stat_M_dep" || fit.model$model$corstr=="non_stat_M_dep" || fit.model$model$corstr=="AR-M")
+		   cat(", M =",fit.model$model$M,"\n") else cat("\n")
+		   colnames(QIC) <- " "
+		   rownames(QIC) <- "QIC    "
+		   print(QIC,digits=6)
+	   }
+}
+
+leverage_glm <- function(fit.model, xlab, ylab, main, pch, col, identify, out){
+	if(class(fit.model)[1] != "glm" & class(fit.model)[1] != "lm" & class(fit.model)[1] != "negbin") 
+	  stop("Only lm-, glm- and glm.nb-type objects are supported!!",call.=FALSE)
+	if(missingArg(out)) out <- FALSE   
+	X <- model.matrix(fit.model)
+	n <- nrow(X)
+	p <- ncol(X)
+	if(class(fit.model)[1] == "lm"){
+	  if(any(fit.model$weights == 0)) stop("Only positive values of weights are allowed!!",call.=FALSE)
+	  if(is.null(fit.model$weights)) w <- matrix(1,n,1) else w <- fit.model$weights
+	}
+	Xw <- X*matrix(sqrt(w),n,p)
+	salida <- svd(Xw)
+	h <- apply(salida$u^2,1,sum)
+    if(missingArg(xlab))  xlab="Index"
+    if(missingArg(ylab))  ylab="Leverage"
+    if(missingArg(main))  main=" "
+    if(missingArg(pch))   pch=20
+    if(missingArg(col))   col="black"
+    plot(h, xlab=xlab, ylab=ylab, main=main, pch=pch, col=col, type="h")
+    if(!missingArg(identify)) identify(h, n=identify)
+    if(out) return(stat=h)
+}
+
+Cookdis_glm <- function(fit.model, xlab, ylab, main, pch, col, identify, out){
+	if(class(fit.model)[1] != "glm" & class(fit.model)[1] != "lm" & class(fit.model)[1] != "negbin") 
+	  stop("Only lm-, glm- and glm.nb-type objects are supported!!",call.=FALSE)
+	if(missingArg(out)) out <- FALSE   
+	X <- model.matrix(fit.model)
+	n <- nrow(X)
+	p <- ncol(X)
+	if(class(fit.model)[1] == "glm"){
+	  if(any(fit.model$prior.weights == 0)) stop("Only positive values of weights are allowed!!",call.=FALSE)	
+	  w <- fit.model$weights
+	  if(fit.model$family$family=="poisson" & sd(fit.model$prior.weights)>0)
+	    stop("The option weights are not allowed for poisson family!!",call.=FALSE)
+	}
+	if(class(fit.model)[1] == "negbin"){
+	  if(any(fit.model$prior.weights == 0)) stop("Only positive values of weights are allowed!!",call.=FALSE)
+	  if(sd(fit.model$prior.weights)>0)
+		stop("The option weights are not allowed for negative binomial family!!",call.=FALSE)
+	  w <- fit.model$weights
+	}
+	if(class(fit.model)[1] == "lm"){
+	  if(any(fit.model$weights == 0)) stop("Only positive values of weights are allowed!!",call.=FALSE)
+	  if(is.null(fit.model$weights)) w <- matrix(1,n,1) else w <- fit.model$weights
+	}
+	Xw <- X*matrix(sqrt(w),n,p)
+	salida <- svd(Xw)
+	h <- apply(salida$u^2,1,sum)
+	if(class(fit.model)[1] == "glm"){
+	  ts <- resid(fit.model,type="pearson")
+	  phi <- (n-p)/sum(ts^2)
+	  if(fit.model$family$family=="poisson" || fit.model$family$family=="binomial") phi <- 1
+	  td <- resid(fit.model,type="pearson")*sqrt(phi/(1-h))
+	}
+	if(class(fit.model)[1] == "negbin"){
+	  td <- resid(fit.model,type="pearson")*sqrt(1/(1-h))
+	}        
+	if(class(fit.model)[1] == "lm"){
+		ts <- resid(fit.model)
+        phi <- (n-p)/sum(ts^2*w)
+		td <- resid(fit.model)*sqrt(phi*w/(1-h))
+	}
+  dc <- (h/(1-h))*(td^2)
+  if(missingArg(xlab))  xlab="Index"
+  if(missingArg(ylab))  ylab="Cook distance"
+  if(missingArg(main))  main=" "
+  if(missingArg(pch))   pch=20
+  if(missingArg(col))   col="black"
+  plot(dc, xlab=xlab, ylab=ylab, main=main, pch=pch, col=col, type="h")
+  if(!missingArg(identify)) identify(dc, n=identify)
+  if(out) return(stat=dc)
+}
+
+
+case.deletion_glm <- function(fit.model,subset){
+	      if(class(fit.model)[1] != "glm" & class(fit.model)[1] != "lm" & class(fit.model)[1] != "negbin") 
+	        stop("Only lm-, glm- and glm.nb-type objects are supported!!",call.=FALSE)
+          if(missingArg(subset)) 
+		    stop("A subset of individuals must be specified!!",call.=FALSE)
+          X <- model.matrix(fit.model)
+		  n <- nrow(X)
+		  p <- ncol(X)
+		  cfit1 <- coef(fit.model)
+		  sefit1 <- sqrt(diag(vcov(fit.model)))
+		  pfit1 <- coef(fit.model)/sefit1
+		  pvalue  <- " Pr(>|t|) "
+		  pvalue2 <- " Pr(>|t|)*"
+	      if(class(fit.model)[1] == "lm"){
+     	      if(any(fit.model$weights == 0)) stop("Only positive values of weights are allowed!!",call.=FALSE)
+			  y <- resid(fit.model) + fitted(fit.model)
+			  fit0 <- lm(y ~ -1 + X, offset=fit.model$offset, weights=fit.model$weights, subset=subset)
+			  cfit0 <- coef(fit0)
+			  sefit0 <- sqrt(diag(vcov(fit0)))
+			  pfit0 <- coef(fit0)/sefit0
+			  pfit0 <- 2*pt(-abs(pfit0),nrow(model.matrix(fit0))-p)
+			  pfit1 <- 2*pt(-abs(pfit1),n-p)
+   		  }
+	      if(class(fit.model)[1] == "glm"){
+		  	if(any(fit.model$prior.weights == 0)) stop("Only positive values of weights are allowed!!",call.=FALSE)	
+	        if(fit.model$family$family=="poisson" & sd(fit.model$prior.weights)>0)
+	          stop("The option weights are not allowed for poisson family!!",call.=FALSE)
+			  y <- fit.model$y
+			  fit0 <- glm(y ~ -1 + X, family=fit.model$family, offset=fit.model$offset, weights=fit.model$prior.weights, subset=subset)
+			  cfit0 <- coef(fit0)
+			  sefit0 <- sqrt(diag(vcov(fit0)))
+			  pfit0 <- coef(fit0)/sefit0
+			  if(fit.model$family$family!="binomial" & fit.model$family$family!="poisson"){
+				  pfit1 <- 2*pt(-abs(pfit1),n-p)
+				  pfit0 <- 2*pt(-abs(pfit0),nrow(model.matrix(fit0))-p)
+		      }else{
+			      pfit1 <- 2*pnorm(-abs(pfit1))
+				  pfit0 <- 2*pnorm(-abs(pfit0))
+				  pvalue  <- " Pr(>|z|) "
+		          pvalue2 <- " Pr(>|z|)*"
+			  }
+		  }
+	      if(class(fit.model)[1] == "negbin"){
+	        if(any(fit.model$prior.weights == 0)) stop("Only positive values of weights are allowed!!",call.=FALSE)
+	        if(sd(fit.model$prior.weights)>0)
+		      stop("The option weights are not allowed for negative binomial family!!",call.=FALSE)
+	          w <- fit.model$weights
+			  y <- fit.model$y
+			  assign("links", fit.model$family$link, envir = .GlobalEnv)
+		      if(!is.null(fit.model$offset)) offset=fit.model$offset
+			  if(is.null(fit.model$offset))
+			  fit0 <- glm.nb(y ~ -1 + X, start=coef(fit.model), init.theta=fit.model$theta, link=links, subset=subset)
+		      else 
+		      fit0 <- glm.nb(y ~ -1 + X + offset(offset), start=coef(fit.model), init.theta=fit.model$theta, link=links, subset=subset)
+			  cfit0 <- coef(fit0)
+			  sefit0 <- sqrt(diag(vcov(fit0)))
+			  pfit0 <- coef(fit0)/sefit0
+			  pfit1 <- 2*pnorm(-abs(pfit1))
+			  pfit0 <- 2*pnorm(-abs(pfit0))
+			  pvalue  <- " Pr(>|z|) "
+		      pvalue2 <- " Pr(>|z|)*"
+		  }
+		  varc <- 100*(cfit0-cfit1)/abs(cfit1)
+		  lims <- rep(NA,length(cfit1))
+		  cmat <- cbind(cfit1,sefit1,pfit1,lims,cfit0,sefit0,pfit0,lims,varc)
+		  rownames(cmat) <- names(cfit1)
+		  colnames(cmat) <- c("Estimate ","Std. Error ",pvalue,"|","Estimate*","Std. Error*",pvalue2,"|","Change(%)")
+		  cat("\n")
+		  printCoefmat(cmat,digits=4,cs.ind=c(1,2,5,6), tst.ind=c(3,7), zap.ind=9, dig.tst=5, na.print="|")
+		  cat("\n(*) estimates, standard errors and p-values obtained using the specified subset of individuals.\n")
+}
+
+
+vdtest <- function(fit.model){
+	if(class(fit.model)[1] != "glm" & class(fit.model)[1] != "lm") 
+	  stop("Only lm- and glm-type objects are supported!!",call.=FALSE)
+	if(class(fit.model)[1] == "glm"){
+		if(fit.model$family$family!="gaussian" & fit.model$family$family!="Gamma" &
+	       fit.model$family$family!="inverse.gaussian") 
+	      stop("Only gaussian, Gamma and inverse.gaussian families are supported!!",call.=FALSE)
+	}	  
+	Z <- model.matrix(fit.model)  
+	if(names(coef(fit.model))[1]=="(Intercept)" || sd(Z[,1])==0) Z <- as.matrix(Z[,-1])
+	n <- nrow(Z)
+	p <- ncol(Z)
+    if(class(fit.model)[1] == "lm"){
+	  if(is.null(fit.model$weights)) w <- matrix(1,n,1) else w <- fit.model$weights
+	  phies <- mean(resid(fit.model)^2*w)
+	  	  mus <- fitted(fit.model)
+	      y <- resid(fit.model) + fitted(fit.model)
+	      phies <- mean((y-mus)^2*w)
+	      tau <- (y-mus)^2*w/phies - 1
+		  pes <- matrix(1,n,1)
+	}  
+	if(class(fit.model)[1] == "glm"){
+		y <- fit.model$y
+		mus <- fitted(fit.model)
+		w <- fit.model$prior.weights
+		if(fit.model$family$family=="gaussian"){
+	      phies <- mean((y-mus)^2*w)
+	      tau <- (y-mus)^2*w/phies - 1
+		  pes <- matrix(1,n,1)
+		}
+		if(fit.model$family$family=="inverse.gaussian"){
+		  phies <- mean((y -mus)^2*w/(mus^2*y))
+	      tau <- (y -mus)^2*w/(mus^2*y*phies) - 1
+		  pes <- matrix(1,n,1)
+		}
+		if(fit.model$family$family=="Gamma"){
+		  phies <- sum(resid(fit.model,type="pearson")^2)/fit.model$df.residual
+          phies_min <- phies*(0.1)
+		  phies_max <- phies*(1.9)
+		  phies <- uniroot(function(x) sum((y/mus + log(mus*x/(w*y)) + psigamma(w/x) - 1)*w), lower=phies_min, upper=phies_max)$root
+		  tau <- 2*(y/mus + log(mus*phies/(w*y)) + psigamma(w/phies) - 1)*(w/phies)
+		  pes <- sqrt((w/phies)*(2*psigamma(w/phies,1)*(w/phies) - 2))
+		}  
+	}
+	Zstar <- cbind(1,Z)
+	Zstar <- matrix(pes,n,ncol(Zstar))*Zstar
+	Zstar2 <- (solve(t(Zstar)%*%Zstar))[-1,-1]
+	SC = 0.5*(t(tau)%*%Z)%*%Zstar2%*%(t(Z)%*%tau)
+	cat("\n             Score test for varying dispersion\n\n")
+	cat("          Statistic = ",round(SC,digits=5),"\n degrees of freedom = ",p,"\n            p-value = ",format.pval(1-pchisq(SC,p)),"\n\n")
+}
+
+
+
+
+
+anova_glm <- function(fit.model1,fit.model2,test,out){
+			  if(class(fit.model1)[1] != "lm" & class(fit.model1)[1] != "glm" & class(fit.model1)[1] != "overglm") 
+	            stop("Only lm-, glm- and overglm-type objects are supported!!",call.=FALSE)
+			 if(missingArg(test)) test <- "wald"
+	         test <- tolower(test)
+			 if(test!="wald" & test!="lrt" & test!="rao" & test!="gradient")
+	              stop("Only Wald-, Rao-, Likelihood-ratio- and Gradient-type statistics are supported!!",call.=FALSE)
+			 if(test!="wald" & test!="lrt" & class(fit.model1)[1] == "overglm")
+	              stop("Only Wald- and Likelihood-ratio-type statistics are supported for overglm-type objects!!",call.=FALSE)				  
+
+			 if(missingArg(out)) out <- FALSE
+
+
+			 if(!is.logical(out))
+	            stop("The argument 'out' must be logical!!",call.=FALSE)
+			 if(length(coef(fit.model1)) > length(coef(fit.model2))){
+			   fit1 <- fit.model1
+   			   fit0 <- fit.model2
+             }else{
+			   fit0 <- fit.model1
+   			   fit1 <- fit.model2
+			 }
+			 vars0 <- colnames(model.matrix(fit0))
+			 vars1 <- colnames(model.matrix(fit1))
+			 nest <- vars0 %in% vars1
+			 ids <- is.na(match(vars1,vars0))
+
+
+
+			 if(sum(nest) < length(nest) || sum(ids)==0 || class(fit1)[1] != class(fit0)[1])
+   			   stop("The specified models are not nested!!",call.=FALSE)
+			 if(class(fit1)[1] == "lm" & !identical(fit1$weights,fit0$weights))
+   			   stop("The specified models are not nested!!",call.=FALSE)
+			 if(class(fit1)[1] == "glm" & (fit1$prior.weights!=fit0$prior.weights || fit1$family$family!=fit0$family$family ||
+			   fit1$family$link!=fit0$family$link))
+   			   stop("The specified models are not nested!!",call.=FALSE)
+			 if(!all.equal(fit1$call$data,fit0$call$data) || !all.equal(fit1$call$subset,fit0$call$subset))
+   			   stop("The specified models are not nested!!",call.=FALSE)
+
+
+
+			 if(class(fit1)[1] == "lm" || (class(fit1)[1] == "glm" & fit1$family$family=="gaussian" & fit1$family$link=="identity"))
+			   statistic <- t(coef(fit1)[ids])%*%solve(vcov(fit1)[ids,ids])%*%coef(fit1)[ids]
+			 else{
+			      phi <- sum(resid(fit1,type="pearson")^2)/fit1$df.residual
+				  if(fit1$family$family=="poisson" || fit1$family$family=="binomial") phi <- 1
+			      X <- model.matrix(fit1)
+			      if(test=="wald") statistic <- t(coef(fit1)[ids])%*%solve(vcov(fit1)[ids,ids])%*%coef(fit1)[ids]
+				  if(test=="lrt"){
+					if(class(fit.model1)[1] == "overglm") statistic <- 2*(logLik(fit1)-logLik(fit0))
+					else statistic <- (fit0$deviance - fit1$deviance)/phi
+				  }
+				  if(test=="rao"){
+			        v0 <- solve(t(X)%*%(X*matrix(fit0$weights,nrow(X),ncol(X))))[ids,ids]
+			        u0 <- t(X[,ids])%*%(resid(fit0,type="pearson")*sqrt(fit0$weights))
+			        statistic <- t(u0)%*%v0%*%u0/phi
+			      }
+			      if(test=="gradient"){
+			        u0 <- t(X[,ids])%*%(resid(fit0,type="pearson")*sqrt(fit0$weights))
+			        statistic <- abs(t(u0)%*%coef(fit1)[ids]/phi)
+			      }
+			 } 	  
+			 df <- sum(ids)
+			 if(test=="lrt") test <- "Likelihood-ratio test"
+        	 if(test=="rao") test <- "Rao test"
+	         if(test=="gradient") test <- "Gradient test"
+	         if(test=="wald") test <- "Wald test"	
+			 if(class(fit1)[1] == "lm" || (class(fit1)[1] == "glm" & fit1$family$family=="gaussian" & fit1$family$link=="identity")){
+			   	 cat("\n F test \n")
+				 cat("\n",paste("Model 1: ",fit1$call[2]),"\n")
+				 cat(paste(" Model 2: ",fit0$call[2]),"\n\n")
+			     salida <- cbind(statistic/df,df,fit1$df.residual,1-pf(sc/df,df,fit1$df.residual))
+                 colnames(salida) <- c("F   ", "Df1", "Df2","Pr(>F)")
+				 rownames(salida) <- " "
+                 printCoefmat(salida, P.values=TRUE, has.Pvalue=TRUE, digits=5, signif.legend=FALSE, cs.ind=2)
+				 if(out) list(F=as.numeric(statistic/df), Df1=df, Df2=fit1$df.residual)
+			 }
+			 else{
+			   cat("\n ",test,"\n")
+			   cat("\n",paste("Model 1: ",fit1$formula[2],fit1$formula[1],fit1$formula[3:length(fit1$formula)],collapse=""),"\n")
+			   cat(paste(" Model 2: ",fit0$formula[2],fit0$formula[1],fit0$formula[3:length(fit0$formula)],collapse=""),"\n\n")
+			   salida <- cbind(statistic, df, 1-pchisq(statistic,df))
+	           colnames(salida) <- c("Chi  ", "Df", "Pr(>Chi)")
+			   rownames(salida) <- " "
+               printCoefmat(salida, P.values=TRUE, has.Pvalue=TRUE, digits=5, signif.legend=FALSE, cs.ind=2)
+			   if(out) list(Chi=as.numeric(statistic), Df=df) 
+			 }
+}
+
+estfun_glm <- function(fit.model){
+			  if(class(fit.model)[1] != "glm" & class(fit.model)[1] != "lm"& class(fit.model)[1] != "overglm") 
+	            stop("Only lm-, glm- and  overglm-type objects are supported!!",call.=FALSE)
+			  X <- model.matrix(fit.model)
+			  n <- nrow(X)
+			  p <- ncol(X)
+			  if(class(fit.model)[1] == "glm"){
+				  phi <- sum(resid(fit.model,type="pearson")^2)/(n-p)
+				  if(fit.model$family$link=="inverse" || fit.model$family$link=="1/mu^2") delta <- -1 else delta <- 1
+				  salida <- delta*t(X)%*%as.matrix(resid(fit.model,type="pearson")*sqrt(fit.model$weights))/phi
+			  }
+			  if(class(fit.model)[1] == "lm"){
+				  if(is.null(fit.model$weights)) weights <- matrix(1,n,1) else weights <- fit.model$weights
+				  phi <- sum(resid(fit.model)^2*weights)/(n-p)
+				  salida <- t(X)%*%as.matrix(weights*resid(fit.model))/phi
+			  }
+			  if(class(fit.model)[1] == "overglm") salida <- fit.model$estfun
+			  if(class(fit.model)[1] != "overglm")  rownames(salida) <- colnames(X)
+			  colnames(salida) <- "score"
+			  cat("\nEstimating equations\n\n")
+			  salida
+}
+
+ci_glm <- function(fit.model, conf, test, out){
+	if(class(fit.model)[1] != "glm" & class(fit.model)[1] != "lm" & class(fit.model)[1] != "overglm") 
+	  stop("Only lm-, glm- and overglm-type objects are supported!!",call.=FALSE)
+	if(missingArg(conf)) conf <- 0.95
+	if(conf <= 0 || conf >= 1)
+	  stop("The argument 'conf' must be within (0,1)!!",call.=FALSE)
+	if(missingArg(test)) test <- "wald"
+	test <- tolower(test)
+	if(test!="wald" & test!="lrt" & test!="rao" & test!="gradient")
+	  stop("Only Wald-, Rao-, Likelihood-ratio- and Gradient-type statistics are supported!!",call.=FALSE)
+	if(test!="wald" & class(fit.model)[1] == "overglm")
+	  stop("Only the Wald-type statistic is supported for overglm-type objects!!",call.=FALSE)
+	if(missingArg(out)) out <- FALSE
+	if(!is.logical(out))
+	  stop("The argument 'out' must be logical!!",call.=FALSE)
+	alpha <- 1 - conf
+	ee <- sqrt(diag(vcov(fit.model)))
+	X <- model.matrix(fit.model)
+	p <- ncol(X)
+	n <- nrow(X)
+	li <- coef(fit.model) - qnorm(1-alpha/2)*ee
+	ls <- coef(fit.model) + qnorm(1-alpha/2)*ee
+	if(class(fit.model)[1] == "overglm"){
+	  li[p+1] <- exp(li[p+1])
+	  ls[p+1] <- exp(ls[p+1])
+	}
+	test2 <- test
+	if(class(fit.model)[1] == "lm" || (class(fit.model)[1] == "glm" & fit.model$family$family=="gaussian" & fit.model$family$link=="identity")){
+	  test <- "wald"
+	  li <- coef(fit.model) - qt(1-alpha/2,n-p)*ee
+	  ls <- coef(fit.model) + qt(1-alpha/2,n-p)*ee
+	}
+	if(class(fit.model)[1] == "overglm") results <- matrix(0,p+1,2) else results <- matrix(0,p,2)
+	if(test=="lrt" || test=="rao" || test=="gradient"){
+	    oldw <- getOption("warn")
+	    options(warn = -1)
+		phi <- sum(resid(fit.model,type="pearson")^2)/(n-p)
+		if(fit.model$family$family=="poisson" || fit.model$family$family=="binomial") phi <- 1
+		for(i in 1:p){
+			offset0 <- ifelse(is.null(fit.model$offset),0,fit.model$offset)
+			Xs <- X[,-i]
+			starts <- coef(fit.model)[-i]
+			f1 <- function(beta0){
+			    offsets <- offset0 + X[,i]*beta0
+				if(p>1) fit0s <- glm(fit.model$y ~ -1 + Xs, family=fit.model$family, offset=offsets, weights=fit.model$prior.weights)
+				if(p==1) fit0s <- glm(fit.model$y ~ -1, family=fit.model$family, offset=offsets, weights=fit.model$prior.weights)
+				if(test=="lrt") salida <- (fit0s$deviance - fit.model$deviance)/phi - qchisq(1-alpha,1)
+				if(test=="rao"){ 
+					salida <- diag(solve(t(X)%*%(X*matrix(fit0s$weights,n,p))))[i]/phi
+					salida <- (sum(X[,i]*resid(fit0s,type="pearson")*sqrt(fit0s$weights)))^2*salida - qchisq(1-alpha,1)
+				}
+				if(test=="gradient"){
+					salida <- abs((sum(X[,i]*resid(fit0s,type="pearson")*sqrt(fit0s$weights))/phi)*(coef(fit.model)[i]-beta0)) - qchisq(1-alpha,1)
+				}
+				salida
+			}
+			tol <- 1
+			betas <- coef(fit.model)[i]
+			betai <- betas - 1.05*qnorm(1-alpha/2)*ee[i]
+			while(f1(betai)<=0) betai <- betas + 1.05*(betai - betas)
+			results[i,1] <- uniroot(f1, lower=betai, upper=betas)$root
+			betai <- coef(fit.model)[i]
+			tol <- 1
+			betas <- betai + 1.05*qnorm(1-alpha/2)*ee[i]
+			while(f1(betas)<=0) betas <- betai + 1.05*(betas - betai)
+			results[i,2] <- uniroot(f1, lower=betai, upper=betas)$root
+		}
+		options(warn = oldw)
+	}else{
+		 results[,1] <- li
+		 results[,2] <- ls
+	}
+	if(test2=="lrt") test <- "likelihood-ratio"
+	if(test2=="rao") test <- "Rao"
+	if(test2=="gradient") test <- "gradient"
+	if(test2=="wald") test <- "Wald"	
+	if(class(fit.model)[1] == "overglm") rownames(results) <- c(colnames(X),"Dispersion")
+	else  rownames(results) <- colnames(X)
+	colnames(results) <- c("Lower limit","Upper limit")
+	if(class(fit.model)[1] == "lm" || (class(fit.model)[1] == "glm" & fit.model$family$family=="gaussian" & fit.model$family$link=="identity"))
+	  cat("\n Exact",round(100*(1-alpha),digits=1),"percent confidence intervals\n\n")
+	else cat("\n Approximate",round(100*(1-alpha),digits=1),"percent confidence intervals based on the",test,"test \n\n")
+	printCoefmat(results,digits=5,na.print="")
+	if(out) results
+}
+
+roc.curve <- function(fit.model, out, xlab, ylab, main, col){
+				   	if(class(fit.model)[1] != "glm") 
+	                  stop("Only glm-type objects are supported!!",call.=FALSE)
+					if(fit.model$family$family!="binomial")
+	                  stop("Only binomial models are supported!!",call.=FALSE)
+								 if(missingArg(out)) out <- FALSE
+	                if(!is.logical(out))
+	                  stop("The argument 'out' must be logical!!",call.=FALSE)
+				    temp <- data.frame(mus=fitted(fit.model),ys=fit.model$y*fit.model$prior.weights,size=fit.model$prior.weights)
+				    temp2 <- sqldf("select mus, sum(size) as m, sum(ys) as events from temp group by mus")
+					mus <- temp2[,1]
+					if(nrow(temp2) > 1000) mus <- quantile(rep(temp2[,1],temp2[,2]), probs=0:1001/1001)
+				    results <- matrix(0,length(mus),3)
+					d1 <- sum(temp2[,3])
+					d3 <- sum(temp2[,2])
+					d2 <- d3 - d1
+					C <- 0
+					for(i in 1:length(mus)){
+					   results[i,1] <- mus[i]
+					   results[i,2] <- sum(temp2[temp2[,1] >= mus[i],3])/d1
+					   results[i,3] <- (sum(temp2[temp2[,1] < mus[i],2]) - sum(temp2[temp2[,1] < mus[i],3]))/d2
+					   if(i>=2) C <- C +  (1/2)*(results[i,3] - results[i-1,3])*(min(results[i,2],results[i-1,2]) + max(results[i,2],results[i-1,2]))
+					}
+					if(missingArg(xlab))  xlab="1-Specificity"
+					if(missingArg(ylab))  ylab="Sensitivity"
+					if(missingArg(main))  main="Receiver Operating Characteristic Curve"
+					if(missingArg(col))    col="blue"
+					if(missingArg(out)) out=FALSE
+					limits <- range(1-results[,3],results[,2])
+					plot(1-results[,3],results[,2],type="l",xlim=limits,ylim=limits,xlab=xlab,ylab=ylab,main=main,col=col)
+					abline(0,1,lty=3)
+					x11()
+					plot(results[,1],results[,2],type="l",col="blue",xlab="Cutoff",ylab="")
+                    lines(results[,1],results[,3],col="red")
+					yyss <- results[abs(results[,2]-results[,3]) == min(abs(results[,2]-results[,3])),2]
+					legend(min(results[,1]),1.1*yyss[1],legend=c("Sensitivity","Specificity"),col=c("blue","red"),bty="n",lty=1)
+					ks <- max(abs(1-results[,3]-results[,2]))
+					cat("\n Area Under ROC Curve  = ",round(C,digits=3),"\n")
+					cat("     Gini Coefficient  = ",round(2*(C-0.5),digits=3),"\n")
+					cat("        K-S Statistic  = ",round(ks,digits=3),"\n")
+					if(out){
+					  results <- as.data.frame(results)
+					  colnames(results) <- c("Cutoff","Sensitivity","Specificity")
+					  results
+					}  
+					}
+
+
+hosmer.lemeshow <- function(fit.model){
+				   	if(class(fit.model)[1] != "glm") 
+	                  stop("Only glm-type objects are supported!!",call.=FALSE)
+					if(fit.model$family$family!="binomial")
+	                  stop("Only binomial models are supported!!",call.=FALSE)
+				   temp <- data.frame(mus=fitted(fit.model),ys=fit.model$y*fit.model$prior.weights,size=fit.model$prior.weights)
+				   temp2 <- sqldf("select mus, sum(size) as m, sum(ys) as events from temp group by mus")
+				   if(nrow(temp2) <= 2) stop("The Hosmer-Lemeshow test is not computed because the constructed number of groups must be greater than 2!!",call.=FALSE)
+				   if(nrow(temp2) >= 10){
+					 N <- sum(temp2$m)
+					 M <- floor(0.5 + N/10)
+					 j <- 1
+					 i <- 1
+					 group <- matrix(0,nrow(temp2),1)
+					 while(j <= nrow(temp2)){
+					    c <- 0
+					    while(((c + floor(temp2[j,2]/2) <= M) & (c < M)) || c==0){
+						     group[j] <- i
+						     c <- c + temp2[j,2]
+							 j <- j + 1
+							 if(j > nrow(temp2)) break
+						}
+						i <- i + 1
+					 }
+					 group2 <- group
+					 group2[nrow(temp2)] <- group2[nrow(temp2)-1]
+					 temp3 <- data.frame(temp2,gr=group)
+ 					 temp4 <- data.frame(temp2,gr=group2)
+					 hm  <- sqldf("select gr, sum(m), sum(events), sum(mus*m)/sum(m) from temp3 group by gr")
+					 hm1 <- sqldf("select gr, sum(m), sum(events), sum(mus*m)/sum(m) from temp4 group by gr")
+					 if(sd(hm[,2]) > sd(hm1[,2])) hm <- hm1
+	 			   }
+				   if(nrow(temp2) < 10) hm <- cbind(1:nrow(temp2),temp2[,c(2,3,1)])
+				   hm2 <- cbind(hm[,1],hm[,2],hm[,3],hm[,2]*hm[,4])
+        		   colnames(hm2) <- c("Group","Size","Observed","Expected")
+				   rownames(hm2) <- rep("",nrow(hm2))
+				   cat("\n   Hosmer and Lemeshow test\n\n")
+				   printCoefmat(hm2,digits=4,na.print="")
+				   hmt <- sum((hm[,3] - hm[,2]*hm[,4])^2/(hm[,2]*hm[,4]*(1-hm[,4])))
+	               cat("\n         Statistic = ",round(hmt,digits=5),"\ndegrees of freedom = ",nrow(hm)-2,"\n           p-value = ",format.pval(1-pchisq(hmt,nrow(hm)-2)),"\n\n")
+				   }
+
+	
+envelope_glm <- function(fit.model, rep, conf, xlab, ylab, main, pch, col, identify, type, standardize){
+	oldw <- getOption("warn")
+	options(warn = -1)
+	quantile.res <- function(family,y,mu,phi){
+			if(family=="Gamma")	resi <- qnorm(pgamma(y,shape=phi,scale=mu/phi))
+			if(family=="inverse.gaussian") resi <- qnorm(pnorm(sqrt(phi/y)*(y/mu-1)) + exp(2*phi/mu)*pnorm(-sqrt(phi/y)*(y/mu+1)))
+			if(family=="gaussian") resi <- (y-mu)*sqrt(phi)
+			if(family=="poisson"){
+			  b <- ppois(y, mu)
+			  a <- ppois(y-1, mu)
+			  resi <- qnorm(a + (b-a)*runif(length(y)))
+			}
+			if(family=="binomial"){
+			  y2 <- round(y*phi,digits=1) 
+			  b <- pbinom(y2,phi,mu)
+			  a <- pbinom(y2-1,phi,mu)
+			  resi <- qnorm(a + (b-a)*runif(length(y)))
+			}
+			if(family=="negbin"){
+			  b <- pnbinom(y, size=phi, mu=mu)
+			  a <- pnbinom(y-1, size=phi, mu=mu)
+			  resi <- qnorm(a + (b-a)*runif(length(y)))
+			}
+	resi		
+    }
+	if(missingArg(standardize)) standardize <- TRUE
+	if(missingArg(type)) type <- "quantile"
+	if(type != "deviance" & type != "pearson" & type != "quantile") 
+	  stop("Only deviance-, pearson-, and quantile-type residuals are supported!!",call.=FALSE)
+	if(missingArg(rep))   rep=50
+	if(missingArg(conf))   conf=0.95
+	if(conf<0 || conf>1) stop("Only values of the argument 'conf' within the (0,1) interval are allowed!!",call.=FALSE)
+	if(rep<0) stop("Only positive values of the argument 'rep' are allowed!!",call.=FALSE)
+	
+	if(class(fit.model)[1] != "glm" & class(fit.model)[1] != "lm" & class(fit.model)[1] != "negbin") 
+	  stop("Only lm-, glm- and glm.nb-type objects are supported!!",call.=FALSE)
+	X <- model.matrix(fit.model)
+	n <- nrow(X)
+	p <- ncol(X)
+	if(class(fit.model)[1] == "glm"){
+	  if(any(fit.model$prior.weights == 0)) stop("Only positive values of weights are allowed!!",call.=FALSE)
+	  if(fit.model$family$family=="poisson" & sd(fit.model$prior.weights)>0)
+		stop("The option weights are not allowed for poisson family!!",call.=FALSE)
+	  w <- fit.model$weights
+	}
+	if(class(fit.model)[1] == "negbin"){
+	  if(any(fit.model$prior.weights == 0)) stop("Only positive values of weights are allowed!!",call.=FALSE)
+	  if(sd(fit.model$prior.weights)>0)
+		stop("The option weights are not allowed for negative binomial family!!",call.=FALSE)
+	  w <- fit.model$weights
+	}
+	if(class(fit.model)[1] == "lm"){
+	  if(any(fit.model$weights == 0)) stop("Only positive values of weights are allowed!!",call.=FALSE)
+	  if(is.null(fit.model$weights)) w <- matrix(1,n,1) else w <- fit.model$weights
+	}
+	if(standardize){
+	  Xw <- X*matrix(sqrt(w),n,p)
+	  salida <- svd(Xw)
+	  h <- apply(salida$u^2,1,sum)
+	}
+	e <- matrix(0,n,floor(rep))
+	if(class(fit.model)[1] == "glm"){
+		rig <- function(n,mu,phi){
+           y <- rnorm(n)^2
+           x <- mu + mu^2*y/(2*phi) - (mu/(2*phi))*sqrt(4*mu*phi*y + mu^2*y^2)
+           u <- runif(n)
+           ifelse(u <= mu/(mu + x),x,mu^2/x)
+        }
+        if(fit.model$family$family!="gaussian" & fit.model$family$family!="Gamma" &
+           fit.model$family$family!="inverse.gaussian" & fit.model$family$family!="poisson" & 
+           fit.model$family$family!="binomial") 
+          stop("Only gaussian, Gamma, inverse.gaussian, poisson and binomial families are supported!!",call.=FALSE)
+		ts <- resid(fit.model,type="pearson")
+		phi <- (n-p)/sum(ts^2)
+	    if(fit.model$family$family=="poisson" || fit.model$family$family=="binomial") phi <- 1
+		if(type=="quantile")  td <- quantile.res(fit.model$family$family,fit.model$y,fitted(fit.model),phi*fit.model$prior.weights)
+		else td <- resid(fit.model,type=type)*sqrt(phi)
+		if(standardize) td <- td/sqrt(1-h)
+		bar <- txtProgressBar(min=0, max=rep, initial=0, width=min(50,rep), char="+", style=3)
+		i <- 1
+		while(i<=floor(rep)){
+			if(fit.model$family$family=="Gamma")
+			  resp <- rgamma(rep(1,n),shape=phi*fit.model$prior.weights, scale=fitted(fit.model)/(fit.model$prior.weights*phi))
+			if(fit.model$family$family=="inverse.gaussian") resp <- rig(n,fitted(fit.model),phi*fit.model$prior.weights)
+			if(fit.model$family$family=="gaussian") resp <- sqrt(1/(fit.model$prior.weights*phi))*rnorm(n,0,1) + fitted(fit.model)
+			if(fit.model$family$family=="poisson") resp <- rpois(rep(1,n), fitted(fit.model))
+            if(fit.model$family$family=="binomial") resp <- rbinom(rep(1,n),fit.model$prior.weights,fitted(fit.model))/fit.model$prior.weights
+		    fit <- try(glm(resp ~ -1 + X, family=fit.model$family, offset=fit.model$offset, start=coef(fit.model), weights=fit.model$prior.weights),silent=TRUE)
+		        if(is.list(fit)){
+		          if(fit$converged==TRUE){
+				    if(standardize){
+					   w <- fit$weights
+					   Xw <- X*matrix(sqrt(w),n,p)
+					   salida <- svd(Xw)
+		               h <- apply(salida$u^2,1,sum)
+					}
+					phis <- (n-p)/sum(resid(fit,type="pearson")^2)
+				    if(fit$family$family=="poisson" || fit$family$family=="binomial") phis <- 1
+		            if(type=="quantile")  tds <- quantile.res(fit$family$family,fit$y,fitted(fit),phis*fit$prior.weights)
+					else tds <- resid(fit,type=type)*sqrt(phis)
+					if(standardize) tds <- tds/sqrt(1-h)
+				    e[,i] <- sort(tds)
+			        setTxtProgressBar(bar,i)
+				    i <- i + 1
+	              }	
+		        }
+		    }
+	}
+    if(class(fit.model)[1] == "lm"){
+		ts <- resid(fit.model)
+		phi <- (n-p)/sum(ts^2*w)
+		td <- resid(fit.model)*sqrt(phi*w)
+		if(standardize) td <- td/sqrt(1-h)
+		e <- matrix(0,n,rep)
+		bar <- txtProgressBar(min=0, max=rep, initial=0, width=min(50,rep), char="+", style=3)
+		i <- 1
+		while(i<=floor(rep)){
+				err <- fitted(fit.model) + rnorm(n)/sqrt(phi*w)
+				fit <- lm(err ~ -1 + X, weights=w)
+				ress <- resid(fit)
+				phis <- (n-p)/sum((ress)^2*w)
+				tds <- ress*sqrt(phis*w)
+				if(standardize) tds <- tds/sqrt(1-h)
+				e[,i] <- sort(tds)
+			    setTxtProgressBar(bar,i)
+				i <- i + 1
+	    }	
+    }
+    if(class(fit.model)[1] == "negbin"){
+		if(type=="quantile")  td <- quantile.res("negbin",fit.model$y,fitted(fit.model),fit.model$theta)
+		else td <- resid(fit.model,type=type)
+		if(standardize) td <- td/sqrt(1-h)
+		e <- matrix(0,n,rep)
+		bar <- txtProgressBar(min=0, max=rep, initial=0, width=min(50,rep), char="+", style=3)
+		i <- 1
+		assign("links", fit.model$family$link, envir = .GlobalEnv)
+		if(!is.null(fit.model$offset)) offset=fit.model$offset
+		while(i<=floor(rep)){
+				resp <- rnbinom(n, size=fit.model$theta, mu=fitted(fit.model))
+				if(is.null(fit.model$offset))
+		        fit <- try(glm.nb(resp ~ -1 + X, start=coef(fit.model), init.theta=fit.model$theta, link=links),silent=TRUE)
+				else
+		        fit <- try(glm.nb(resp ~ -1 + X + offset(offset), start=coef(fit.model), init.theta=fit.model$theta, link=links),silent=TRUE)
+		        if(is.list(fit)){
+		          if(fit$converged==TRUE){
+				  	if(standardize){
+					    w <- fit$weights
+		                Xw <- X*matrix(sqrt(w),n,p)
+		                salida <- svd(Xw)
+		                h <- apply(salida$u^2,1,sum)
+					}	
+		            if(type=="quantile")  tds <- quantile.res("negbin",fit$y,fitted(fit),fit$theta)
+					else tds <- resid(fit,type=type)
+					if(standardize) tds <- tds/sqrt(1-h)
+				    e[,i] <- sort(tds)
+			        setTxtProgressBar(bar,i)
+				    i <- i + 1
+				  }
+				}
+	    }	
+    }
+	e1 <- matrix(0,n,1)
+	e2 <- matrix(0,n,1)
+	alpha <- (1 - conf)/n
+	for(i in 1:n){
+	eo <- sort(e[i,])
+	e1[i] <- quantile(eo,alpha/2)
+	e2[i] <- quantile(eo,1-alpha/2)}
+	med <- apply(e,1,mean)
+	faixa <- range(td,e1,e2)
+	par(pty="s")
+	if(missingArg(xlab))  xlab="Expectation of order statistics of N(0,1)"
+	if(missingArg(ylab))  ylab=ifelse(standardize,paste("Standardized ",type,"-type residuals"),paste(type,"-type residuals"))
+	if(class(fit.model)[1] == "lm") ylab=ifelse(standardize,"Standardized residuals","Residuals")
+	if(missingArg(main))  main=" "
+	if(missingArg(pch))   pch=20
+	if(missingArg(col))   col="black"
+	close(bar)
+	par(pty="s")
+	outm <- qqnorm(td, xlab="", ylab="", ylim=faixa, main=main, pch=pch, col=col)
+	par(new=TRUE)
+	qqnorm(e1,axes=FALSE,xlab="",ylab="",main="", type="l",ylim=faixa,lty=1)
+	par(new=TRUE)
+	qqnorm(e2,axes=FALSE,xlab="",ylab="", main="", type="l",ylim=faixa,lty=1)
+	par(new=TRUE)
+	qqnorm(med,axes=FALSE,xlab=xlab,ylab=ylab,main=main,type="l",ylim=faixa,lty=2)
+	if(!missingArg(identify)) identify(outm$x,outm$y, n=identify)
+#	return(cbind(e1,med,e2))
+	options(warn = oldw)
+}
+
+residuals_glm <- function(fit.model, xlab, ylab, main, pch, col, identify, type, out, standardize){
+    if(missingArg(out)) out <- FALSE
+	if(missingArg(standardize)) standardize <- TRUE
+	quantile.res <- function(family,y,mu,phi){
+			if(family=="Gamma")	resi <- qnorm(pgamma(y,shape=phi,scale=mu/phi))
+			if(family=="inverse.gaussian") resi <- qnorm(pnorm(sqrt(phi/y)*(y/mu-1)) + exp(2*phi/mu)*pnorm(-sqrt(phi/y)*(y/mu+1)))
+			if(family=="gaussian") resi <- (y-mu)*sqrt(phi)
+			if(family=="poisson"){
+			  b <- ppois(y, mu)
+			  a <- ppois(y-1, mu)
+			  resi <- qnorm(a + (b-a)*runif(length(y)))
+			}
+			if(family=="binomial"){
+			  y2 <- round(y*phi,digits=1) 
+			  b <- pbinom(y2,phi,mu)
+			  a <- pbinom(y2-1,phi,mu)
+			  resi <- qnorm(a + (b-a)*runif(length(y)))
+			}
+			if(family=="negbin"){
+			  b <- pnbinom(y, size=phi, mu=mu)
+			  a <- pnbinom(y-1, size=phi, mu=mu)
+			  resi <- qnorm(a + (b-a)*runif(length(y)))
+			}
+	resi		
+    }
+	if(class(fit.model)[1] != "glm" & class(fit.model)[1] != "lm" & class(fit.model)[1] != "negbin") 
+	  stop("Only lm-, glm- and glm.nb-type objects are supported!!",call.=FALSE)
+	if(missingArg(type)) type <- "quantile"
+	if(class(fit.model)[1] == "glm"){
+	  if(fit.model$family$family=="quasi" || fit.model$family$family=="quasibinomial" ||
+		   fit.model$family$family=="quasipoisson") type <- "deviance"
+	}
+	if(type != "deviance" & type != "pearson" & type != "quantile") 
+	  stop("Only deviance-, pearson-, and quantile-type residuals are supported!!",call.=FALSE)
+	X <- model.matrix(fit.model)
+	n <- nrow(X)
+	p <- ncol(X)
+	if(class(fit.model)[1] == "glm"){
+	  if(any(fit.model$prior.weights == 0)) stop("Only positive values of weights are allowed!!",call.=FALSE)
+		if(fit.model$family$family=="poisson" & sd(fit.model$prior.weights)>0)
+		  stop("The option weights are not allowed for poisson family!!",call.=FALSE)
+	  w <- fit.model$weights
+	}
+	if(class(fit.model)[1] == "negbin"){
+	  if(any(fit.model$prior.weights == 0)) stop("Only positive values of weights are allowed!!",call.=FALSE)
+	  if(sd(fit.model$prior.weights)>0) stop("The option weights are not allowed for negative binomial family!!",call.=FALSE)
+	  w <- fit.model$weights
+	}
+	if(class(fit.model)[1] == "lm"){
+	  if(any(fit.model$weights == 0)) stop("Only positive values of weights are allowed!!",call.=FALSE)
+	  if(is.null(fit.model$weights)) w <- matrix(1,n,1) else w <- fit.model$weights
+	}
+	if(standardize){
+	  Xw <- X*matrix(sqrt(w),n,p)
+	  salida <- svd(Xw)
+	  h <- apply(salida$u^2,1,sum)
+	}  
+	if(class(fit.model)[1] == "glm"){
+	  ts <- resid(fit.model,type="pearson")
+	  phi <- (n-p)/sum(ts^2)
+	  if(fit.model$family$family=="poisson" || fit.model$family$family=="binomial") phi <- 1
+	  if(type=="quantile")  td <- quantile.res(fit.model$family$family,fit.model$y,fitted(fit.model),phi*fit.model$prior.weights)
+	  else td <- resid(fit.model,type=type)*sqrt(phi)
+	}        
+	if(class(fit.model)[1] == "lm"){
+		ts <- resid(fit.model)
+        phi <- (n-p)/sum(ts^2*w)
+		td <- resid(fit.model)*sqrt(phi*w)
+	}
+    if(class(fit.model)[1] == "negbin"){
+		if(type=="quantile")  td <- quantile.res("negbin",fit.model$y,fitted(fit.model),fit.model$theta)
+		else td <- resid(fit.model,type=type)
+	}
+	if(standardize) td <- td/sqrt(1-h)
+	muhat <- fitted(fit.model)
+	if(missingArg(xlab))  xlab="Fitted values"
+	if(missingArg(ylab))  ylab=ifelse(standardize,paste("Standardized ",type,"-type residuals"),paste(type,"-type residuals"))
+	if(class(fit.model)[1] == "lm") ylab=ifelse(standardize,"Standardized residuals","Residuals")
+	if(missingArg(main))  main=" "
+	if(missingArg(pch))   pch=20
+	if(missingArg(col))   col="black"
+	minx <- min(-3.5,min(td))
+	maxx <- max(+3.5,max(td))
+	plot(muhat,td,ylim=c(minx,maxx),xlab=xlab,ylab=ylab,main=main,col=col,pch=pch)
+	abline(h=-3,lty=3)  
+	abline(h=+3,lty=3)
+	if(!missingArg(identify)) identify(muhat,td, n=identify)
+	if(out) list(residual=td)
+}
+
+Dfbetas_glm <- function(fit.model, var, xlab, ylab, main, pch, col, identify){
+	if(missingArg(var))  var=1
+	if(class(fit.model)[1] != "glm" & class(fit.model)[1] != "lm") 
+	  stop("Only lm- and glm-type objects are supported!!",call.=FALSE)
+	X <- model.matrix(fit.model)
+	n <- nrow(X)
+	p <- ncol(X)
+	if(class(fit.model)[1] == "glm"){
+	  if(any(fit.model$prior.weights == 0)) stop("Only positive values of weights are allowed!!",call.=FALSE)
+	  if(fit.model$family$family=="poisson" & sd(fit.model$prior.weights)>0)
+	    stop("The option weights are not allowed for poisson family!!",call.=FALSE)
+	  w <- fit.model$weights
+	  if(fit.model$family$link=="inverse" || fit.model$family$link=="1/mu^2") delta <- -1 else delta <- 1
+	}  
+	if(class(fit.model)[1] == "lm"){
+	  delta <- 1
+	  if(any(fit.model$weights == 0)) stop("Only positive values of weights are allowed!!",call.=FALSE)
+	  if(is.null(fit.model$weights)) w <- matrix(1,n,1) else w <- fit.model$weights
+	}
+	Xw <- X*matrix(sqrt(w),n,p)
+	inv_t <- solve(crossprod(Xw,Xw))
+	h <- matrix(0,n,1)
+	dfbetas <- matrix(0,n,p)
+    for(j in 1:n){
+	   dfbetas[j,] <- inv_t%*%(t(Xw)[,j])
+	   h[j] <- Xw[j,]%*%dfbetas[j,]
+	}   
+	td <- resid(fit.model,type="pearson")/(1-h)
+	dfbetas <- delta*dfbetas*matrix(td,n,p)/t(matrix(sqrt(diag(vcov(fit.model))),p,n))
+  if(missingArg(xlab))  xlab="Index"
+  if(missingArg(ylab))  ylab=paste("Dfbetas for ",colnames(model.matrix(fit.model))[var])
+  if(missingArg(main))  main=" "
+  if(missingArg(pch))   pch=20
+  if(missingArg(col))   col="black"
+  plot(dfbetas[,var], xlab=xlab, ylab=ylab, main=main, pch=pch, col=col, type="h")
+  if(!missingArg(identify)) identify(dfbetas[,var], n=identify)
+  return(stat=dfbetas)
+}
+
+
+
+
+
+
+ 
+
+
+
+
+
+
+vif_glm <- function(fit.model){
+	if(class(fit.model)[1] != "glm" & class(fit.model)[1] != "lm") 
+	  stop("Only lm- and glm-type objects are supported!!",call.=FALSE)
+
+	X <- model.matrix(fit.model)
+	postos <-  attr(X,"assign")
+	vars <- attr(fit.model$terms,"term.labels")
+	n <- nrow(X)
+	p <- ncol(X)
+	if(class(fit.model)[1] == "glm"){
+	   w <- fit.model$weights
+	}  
+	if(class(fit.model)[1] == "lm"){
+	  postos <- fit.model$assign
+	  if(is.null(fit.model$weights)) w <- matrix(1,n,1)
+	  else w <- fit.model$weights
+	}
+	X <- X*matrix(sqrt(w),n,p)
+	vcovar <- solve(t(X)%*%X)	
+	if(names(coef(fit.model))[1]=="(Intercept)"){
+		vcovar <- vcovar[-1,-1]
+		postos <- postos[-1]
+	}
+	nn <- max(postos)
+	if(nn==1) stop("at least two effects are required to calculate GVIFs!!",call.=FALSE)	
+	result <- matrix(0,nn,3)
+	cors <- cov2cor(vcovar)
+	detx <- det(cors)
+	for(i in 1:nn){
+	   rr2 <- as.matrix(cors[postos==i,postos==i])
+	   rr3 <- as.matrix(cors[postos!=i,postos!=i])
+	   result[i,1] <- det(rr2)*det(rr3)/detx
+	   result[i,2] <- ncol(rr2)
+	   result[i,3] <- result[i,1]^(1/(2*ncol(rr2)))
+	}
+	  rownames(result) <- vars
+	  colnames(result) <- c("GVIF", "df", "GVIF^(1/(2*df))")
+	  printCoefmat(result,digits=5,tst.ind=2,dig.tst=0)
+}
+
+
+graphs_glm <- function(fit.model,a,b,ngroup,pch,col){
+      if(missingArg(pch))   pch=20
+      if(missingArg(col))   col="black"
+	  inter <- ifelse(length(coef(fit.model))>0,names(coef(fit.model))[1]=="(Intercept)",FALSE)
+	  if(is.null(fit.model$weights)) weights <- matrix(1,length(fit.model$residuals),1) else weights <- fit.model$weights
+	  if(class(fit.model)[1] == "glm") weights <- fit.model$prior.weights
+	  if(is.null(fit.model$offset)) offset <- matrix(0,length(fit.model$residuals),1) else offset <- fit.model$offset
+	  s <- attr(fit.model$terms,"factors")
+	  names.effects <- attr(fit.model$terms,"term.labels")
+	  type.effects <- attr(fit.model$terms,"dataClasses")[-1]
+	  data <- get_all_vars(fit.model,eval(fit.model$call$data))
+	  data <- as.data.frame(data[apply(data,1,function(x) sum(is.na(x)))==0,])
+	  groups.bin <- function(fit.model,xs,type.effect,ngroup){
+	       temp <- data.frame(xs=xs,ys=fit.model$y*fit.model$prior.weights,size=fit.model$prior.weights)
+		   temp2 <- sqldf("select xs, sum(size) as m, sum(ys) as events from temp group by xs")
+		   if(nrow(temp2) >= ngroup & type.effect!="factor"){
+			 N <- sum(temp2$m)
+			 M <- floor(0.5 + N/ngroup)
+			 j <- 1
+			 i <- 1
+			 group <- matrix(0,nrow(temp2),1)
+			 while(j <= nrow(temp2)){
+			    c <- 0
+			    while(((c + floor(temp2[j,2]/2) <= M) & (c < M)) || c==0){
+				     group[j] <- i
+				     c <- c + temp2[j,2]
+					 j <- j + 1
+					 if(j > nrow(temp2)) break
+				}
+				i <- i + 1
+			 }
+			 group2 <- group
+			 group2[nrow(temp2)] <- group2[nrow(temp2)-1]
+			 temp3 <- data.frame(temp2,gr=group)
+ 			 temp4 <- data.frame(temp2,gr=group2)
+			 hm  <- sqldf("select gr, sum(m), sum(events), sum(xs*m)/sum(m) from temp3 group by gr")
+			 hm1 <- sqldf("select gr, sum(m), sum(events), sum(xs*m)/sum(m) from temp4 group by gr")
+			 if(sd(hm[,2]) > sd(hm1[,2])) hm <- hm1
+	 	   }else hm <- cbind(1:nrow(temp2),temp2[,c(2,3,1)])
+		   hm
+	  }
+	  par(mfrow=c(a,b))
+	  if(class(fit.model)[1] == "glm"){
+	  	  if(var(offset)!=0 & fit.model$family$link!="identity" & fit.model$family$link!="log")
+	    stop("Under the presence of offset only identity and log links are supported!!",call.=FALSE)
+	  if(var(offset)!=0 & fit.model$family$family=="binomial")
+	    stop("Under the presence of offset only identity and log links are supported!!",call.=FALSE)
+	  	ys <- fit.model$model[,1]
+		if(fit.model$family$link=="identity") ys <- ys - offset
+		if(fit.model$family$link=="log") ys <- ys/exp(offset)
+	    for(i in 1:ncol(s)){
+	     if(sum(apply(as.matrix(s[,-i]),2,function(x) sum(s[,i]*x)==sum(x)))==0){
+		   formula <- paste("glm(",rownames(s)[1]," ~ ",ifelse(inter,"1 + ",""),names.effects[i])
+		   formula <- paste(formula,",family=fit.model$family,offset=offset,weights=weights,data=data)")
+		   fit.x <- eval(parse(text=formula))
+		   if(type.effects[i]!="factor"){
+			 if(fit.model$family$family=="binomial"){
+			      if(missingArg(ngroup)) ngroup <- 5 else ngroup <- max(1,floor(abs(ngroup)))
+			      i2 <- ncol(data)-nrow(s)+1 
+				  temp <- groups.bin(fit.model,data[,i+i2],type.effects[i],ngroup)
+				  plot(temp[,4],temp[,3]/temp[,2],xlab=colnames(data)[i+i2],ylab=colnames(fit.x$model)[1],main=names.effects[i],pch=pch,col=col)
+				  xs <- as.data.frame(seq(min(temp[,4]),max(temp[,4]),length=100))
+				  colnames(xs) <- colnames(data)[i+i2]
+			      lines(xs[,1],predict(fit.x,xs,type="response"),lty=2,col="red")
+				  #return(cbind(temp[,4],temp[,3]/temp[,2]))
+			  }else{
+			   plot(data[,i+1],ys,xlab=colnames(data)[i+1],ylab=colnames(fit.x$model)[1],main=names.effects[i],pch=pch,col=col)
+			   xs <- as.data.frame(seq(min(data[,i+1]),max(data[,i+1]),length=100))
+			   colnames(xs) <- colnames(data)[i+1]
+			   lines(xs[,1],predict(fit.x,xs,type="response"),lty=2,col="red")
+			  } 
+		   }else{
+			if(fit.model$family$family=="binomial"){
+    			  i2 <- ncol(data)-nrow(s)+1 
+				  temp <- groups.bin(fit.model,data[,i+i2],type.effects[i],ngroup)
+				  plot(1:nrow(temp),temp[,3]/temp[,2],xaxt='n',xlab=colnames(data)[i+i2],ylab=colnames(fit.x$model)[1],main=names.effects[i],pch=pch,col=col)
+				  axis(1,at=1:nrow(temp),labels=temp[,4])
+				  xs <- as.data.frame(temp[,4])
+				  colnames(xs) <- colnames(data)[i+i2]
+			      lines(1:nrow(temp),predict(fit.x,xs,type="response"),lty=2,col="red")
+			 }else{
+				plot(as.numeric(fit.model$model[,i+1]),ys,xaxt='n',xlab=colnames(data)[i+1],
+				    ylab=colnames(fit.x$model)[1],main=names.effects[i],pch=pch,col=col)
+				xs <- levels(fit.model$model[,i+1])
+				axis(1,at=1:length(xs),labels=xs)
+				xs <- as.data.frame(xs)
+				colnames(xs) <- colnames(data)[i+1]
+			    lines(1:nrow(xs),predict(fit.x,xs,type="response"),lty=2,col="red")
+		    }
+		  }
+	   }
+	  }
+	  }
+	  if(class(fit.model)[1] == "lm"){
+	    for(i in 1:ncol(s)){
+	     if(sum(apply(as.matrix(s[,-i]),2,function(x) sum(s[,i]*x)==sum(x)))==0){
+		   formula <- paste("lm(",rownames(s)[1]," ~ ",ifelse(inter,"1 + ",""),names.effects[i])
+		   formula <- paste(formula,",offset=offset,weights=weights,data=data)")
+		   fit.x <- eval(parse(text=formula))
+		   if(type.effects[i]!="factor"){
+			   plot(data[,i+1],fit.x$model[,1]-offset,xlab=colnames(data)[i+1],ylab=colnames(fit.x$model)[1],main=names.effects[i],pch=pch,col=col)
+			   xs <- as.data.frame(seq(min(data[,i+1]),max(data[,i+1]),length=100))
+			   colnames(xs) <- colnames(data)[i+1]
+			   lines(xs[,1],predict(fit.x,xs,type="response"),lty=2,col="red")
+		   }else{
+				plot(as.numeric(fit.model$model[,i+1]),fit.x$model[,1]-offset,xaxt='n',xlab=colnames(data)[i+1],
+				    ylab=colnames(fit.x$model)[1],main=names.effects[i],pch=pch,col=col)
+				xs <- levels(fit.model$model[,i+1])
+				axis(1,at=1:length(xs),labels=xs)
+				xs <- as.data.frame(xs)
+				colnames(xs) <- colnames(data)[i+1]
+			    lines(1:nrow(xs),predict(fit.x,xs,type="response"),lty=2,col="red")
+		    }
+		 }
+	  }
+	 } 
+}
+
+
+
