@@ -27,9 +27,9 @@ Enrollment_Total <- read_excel("Enrollment_Total.xlsx")
 Benefit_Total$Contract_Plan_Segment <- paste0(Benefit_Total$Contract_ID, 
                                               "-", Benefit_Total$Plan_ID,
                                               "-", Benefit_Total$Segment_ID)
-Enrollment_Data$Contract_Plan_Segment <- paste0(Enrollment_Data$Contract_ID, 
-                                                "-", Enrollment_Data$Plan_ID,
-                                                "-", Enrollment_Data$Segment_ID)
+Enrollment_Total$Contract_Plan_Segment <- paste0(Enrollment_Total$Contract_ID, 
+                                                "-", Enrollment_Total$Plan_ID,
+                                                "-", Enrollment_Total$Segment_ID)
 
 
 ###2. Descriptive Statistics
@@ -183,11 +183,34 @@ Categorical_Benefit_Cat_Stats <-
 
 
 ### 3. Data Normalization
+
+#We transform those variables having min and max into min and range
+Normalized_Benefit_Data <-
+  Benefit_Total %>% 
+  mutate(In_Primary_Range = In_Primary_Max - In_Primary_Min,
+         Out_Primary_Range = Out_Primary_Max - Out_Primary_Min,
+         In_Specialist_Range = In_Specialist_Max - In_Specialist_Min,
+         Out_Specialist_Range = Out_Specialist_Max - Out_Specialist_Min,
+         Urgent_Care_Range = Urgent_Care_Max - Urgent_Care_Min,
+         Out_Ambulance_Range = Out_Ambulance_Max - Out_Ambulance_Min,
+         Out_Hearing_Exam_Range = Out_Hearing_Exam_Max - Out_Hearing_Exam_Min)
+
+
+#Adds the range to continuous variables
+continuous_variables <- c(continuous_variables,
+                          'In_Primary_Range',
+                          'Out_Primary_Range',
+                          'In_Specialist_Range',
+                          'Out_Specialist_Range',
+                          'Urgent_Care_Range',
+                          'Out_Ambulance_Range',
+                          'Out_Hearing_Exam_Range')
+
 scale_minmax <- function(x)
   (x - min(x, na.rm = T)) / (max(x, na.rm = T) - min(x, na.rm = T))
   
 Normalized_Benefit_Data <- 
-  Benefit_Total %>% 
+  Normalized_Benefit_Data %>% 
     #minmax normalization for dummy variables
     mutate_at(continuous_variables, scale_minmax) %>%
     #one-hot encoding for Star_Rating
@@ -205,7 +228,10 @@ Normalized_Benefit_Data <-
     #In_Ambulance_Coin are all NAs
     #Out_Ambulance_Coin only has one plan that is not NA
     #Q1 website is not useful for modelling purposes
-    #The other variables are identically zero
+    #The 14c... variables are identically zero
+    #The ..._Max variables are encoded in the corresponding ..._Min variables
+    #plus ..._Range
+    #Take Star_Rating_New as a comparison baseline
     select(- c('Star_Rating',
                'In_Ambulance_Coin', 
                'Out_Ambulance_Coin', 
@@ -219,7 +245,15 @@ Normalized_Benefit_Data <-
                '14c19_Adult_Day_Health_Services',
                '14c20_Home-Based_Palliative_Care',
                '14c21_In-Home_Support_Services',
-               '14c22_Support_for_Caregivers_of_Enrollees'))
+               '14c22_Support_for_Caregivers_of_Enrollees',
+               'In_Primary_Max',
+               'Out_Primary_Max',
+               'In_Specialist_Max',
+               'Out_Specialist_Max',
+               'Urgent_Care_Max',
+               'Out_Ambulance_Max',
+               'Out_Hearing_Exam_Max',
+               'Star_Rating_New'))
 
 #NA handling
 has_NAs <- function(x)
@@ -245,7 +279,7 @@ Normalized_Benefit_Data <-
            No_Out_HP_Deductible = NA_Out_HP_Deductible,
            Coin_In_Inpatient_numdays = NA_In_Inpatient_numdays,
            Coin_Out_Primary = NA_Out_Primary_Min,
-           Coin_Specialist_Min = NA_Out_Specialist_Min,
+           Coin__Out_Specialist_Min = NA_Out_Specialist_Min,
            Coin_Out_Ambulance = NA_Out_Ambulance_Min,
            No_In_Vision_Exam = NA_In_Vision_Exam,
            Coin_Out_Hearing_Exam = NA_Out_Hearing_Exam_Min,
@@ -264,20 +298,20 @@ Normalized_Benefit_Data <-
     #NA_Out_Specialist_Coin Same
     #NA_Out_Ambulance_Max is encoded in NA_Out_Ambulance_Max
     #NA_Tier1, NA_Tier2, NA_Tier3, NA_Tier4 and 
-    #NA_Tier5_Coin are encoded in Drug_Coverage
     #NA_Tier4_Coin is included in Coin_Tier4
+    #NA_Tier5_Coin are encoded in Drug_Coverage
     select(- c(NA_Annual_Deductible,
                NA_Out_Inpatient,
                NA_Out_Inpatient_numdays,
                NA_Out_Inpatient_Coin,
-               NA_Out_Primary_Max,
+               NA_Out_Primary_Range,
                NA_Out_Primary_Coin,
-               NA_Out_Specialist_Max,
+               NA_Out_Specialist_Range,
                NA_Out_Specialist_Coin,
-               NA_Out_Ambulance_Max,
+               NA_Out_Ambulance_Range,
                NA_Out_Vision_Exam,
                NA_Out_Vision_Exam_Coin,
-               NA_Out_Hearing_Exam_Max,
+               NA_Out_Hearing_Exam_Range,
                NA_Out_Hearing_Exam_Coin,
                NA_Tier1, 
                NA_Tier2, 
@@ -298,7 +332,7 @@ df_for_pca <- Normalized_Benefit_Data %>%
   select(-c(Contract_ID, Plan_ID, Segment_ID, Contract_Plan_Segment)) %>%
   mutate_if(is.logical, as.numeric)
 
-pca_res <- PCA(df_for_pca, scale.unit = T, ncp = 68, graph = F)
+pca_res <- PCA(df_for_pca, scale.unit = T, ncp = 67, graph = F)
 
 eig_val <- get_eigenvalue(pca_res)
 
@@ -345,6 +379,7 @@ plot(pcr_cooks_d,
      xlab = 'Index', 
      pch = 16)
 abline(h = 1)
+abline(h = 0.5)
 
 #Leverage plot for the full model
 pcr_hat_diag <- hatvalues(pcr)
@@ -354,10 +389,26 @@ plot(pcr_hat_diag,
      xlab = 'Index', 
      pch = 16)
 
+#Forward variable selection using the p.value criterion
+step_glm(pcr, criterion = 'p.value', direction = 'forward')
+
+#Reduced formula, obtained via forward p.value criterion
+reduced_formula <- 
+  c_log_mkt_share ~ 0 + Dim.4 + Dim.1 + Dim.47 + Dim.24 + Dim.33 + Dim.9 + 
+  Dim.14 + Dim.17 + Dim.13 + Dim.12 + Dim.32 + Dim.11 + Dim.40 + Dim.38 + 
+  Dim.8 + Dim.26 + Dim.41 + Dim.10 + Dim.25 + Dim.63 + Dim.42 + Dim.27 + Dim.5 
+
+
+
+#Fits the reduced mode. Observations 5 (H3528-14-0 Y2019) and 
+#110 (H3528-17-0 Y2022) are eliminated as they're outliers
+pcr_2 <- lm(reduced_formula, data = data_for_pcr, subset = -c(5, 110))
+summary(pcr_2)
+
 #Saves default graphical settings. To be used latter
 .pardefault <- par(no.readonly = F)
 
-#Displays two plots side-by-side in the same panel
+#Displays the leverage and influence plots side-by-side in the same panel
 par(mfrow = c(1, 2))
 pcr_cooks_d_2 <- cooks.distance(pcr_2)
 pcr_hat_diag_2 <- hatvalues(pcr_2)
@@ -377,21 +428,6 @@ abline(h = 1)
 #resets to default graphical settings
 par(.pardefault)
 
-#Forward variable selection using the p.value criterion
-#step_glm(pcr, criterion = 'p.value', direction = 'forward')
-
-#Reduced formula, obtained via forward p.value criterion
-reduced_formula <- 
-  c_log_mkt_share ~ 0      + Dim.1  + Dim.5  + Dim.9  + Dim.30 + 
-  Dim.40 + Dim.22 + Dim.3  + Dim.47 + Dim.16 + 
-  Dim.14 + Dim.21 + Dim.35 + Dim.2  + Dim.24 + 
-  Dim.8  + Dim.45 + Dim.39 + Dim.11 + Dim.32 + 
-  Dim.63 + Dim.13 + Dim.10 + Dim.56 + Dim.23 
-
-#Fits the reduced model
-pcr_2 <- lm(reduced_formula, data = data_for_pcr)
-summary(pcr_2)
-
 plot(pcr_2$fitted.values, rstudent(pcr_2), 
      main = 'Externally Studentized Residuals vs Fitted Values',
      xlab = 'Fitted', ylab =  'Externally Studentized Residuals', 
@@ -399,23 +435,16 @@ plot(pcr_2$fitted.values, rstudent(pcr_2),
 abline(h = 0)
 
 envelope_glm(pcr_2, rep = 10000)
+par(.pardefault)
 
 
-#### 5.3 Transform Back
-V <- get_pca_var(pca_res)$coord[, c(1,  5,  9,  30, 40, 22, 3,  47, 16,
-                                    14, 21, 35, 2,  24, 8,  45, 39, 11,
-                                    32, 63, 13, 10, 56, 23)]
+
+#### 5.3 Transformation Step
+V <- get_pca_var(pca_res)$coord[, c(4,  1,  47,  24,  33, 9,  14, 17, 13,
+                                    12, 32, 11,  40,  38, 8,  26, 41, 10,
+                                    25, 63, 42,  27,  5)]
 
 
 beta_pcr <- V %*% as.matrix(coef(pcr_2)) %>% as.data.frame()
 arrange(beta_pcr, desc(V1)) %>% View()
 
-
-
-
-
-
-
-
-
-            
