@@ -277,7 +277,7 @@ Normalized_Benefit_Data <-
   Normalized_Benefit_Data %>% 
     rename(No_Out_MOOP = NA_Out_MOOP,
            No_Out_HP_Deductible = NA_Out_HP_Deductible,
-           Coin_In_Inpatient_numdays = NA_In_Inpatient_numdays,
+           Coin_In_Inpatient = NA_In_Inpatient_numdays,
            Coin_Out_Primary = NA_Out_Primary_Min,
            Coin__Out_Specialist_Min = NA_Out_Specialist_Min,
            Coin_Out_Ambulance = NA_Out_Ambulance_Min,
