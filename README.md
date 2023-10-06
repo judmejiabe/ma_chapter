@@ -16,12 +16,12 @@ To download this repository, open your terminal and type `cd [YOUR SELECTED LOCA
 
 ## Running the Repository Code
 
-To run the code in this repository, please open the file ```ma_chapter.RProj```; RStudio will open automatically and you will see the project ```ma_chapter``` in the right corner of the user interface. Then select the tab ```Files``` and click on ```accompanying_code.R```. The script will open and run it by clicking 'Source' on the top right corner of the script. Results will appear in the console and the panel for plots. 
+To run the code in this repository, please open the file ```ma_chapter.RProj```; RStudio will open automatically and you will see the project ```ma_chapter``` in the upper right corner of the user interface. Then select the tab ```Files``` in the lower right panel and click on ```accompanying_code.R```. The script will open and run it by clicking 'Source' on the top right corner of the script. Results will appear in the console and the panel for plots. 
 
 The following files are also available in this repository:
 
 - ```Benefit_Total.xlsx``` contains the benefits and features file.
 - ```Benefit_Dictionary.xlsx``` is the dictionary of the benefits and features file.
 - ```Enrollment_Total.xlsx``` contains the plan enrollment and eligibility data.
-- ```macros.txt```, graceously provided by [Professor Luis Hernando Vanegas Penagos](http://www.hermes.unal.edu.co/pages/Docentes/Docente.jsf?u=lhvanegasp) at National University of Colombia, contains a handful of useful functions for generalized linear modelling and regression analysis.
+- ```macros.txt```, graciously provided by [Professor Luis Hernando Vanegas Penagos](http://www.hermes.unal.edu.co/pages/Docentes/Docente.jsf?u=lhvanegasp) at National University of Colombia, contains a handful of useful functions for generalized linear modelling and regression analysis.
 - ```profile_plot.R``` contains the code to do the profile plot in figure 3 of the chapter.
